@@ -1,0 +1,12 @@
+{
+  "name": "@recoder/app-data",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "exports": "./src/index.ts",
+  "dependencies": {
+    "@recoder/contracts": "*",
+    "@recoder/core": "*",
+    "dexie": "^4.0.11"
+  }
+}

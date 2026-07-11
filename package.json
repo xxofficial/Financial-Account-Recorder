@@ -1,0 +1,27 @@
+{
+  "name": "recoder-platform",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "workspaces": [
+    "apps/web",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev": "npm run dev --workspace @recoder/web",
+    "lint": "npm run lint --workspace @recoder/web",
+    "typecheck": "npm run typecheck --workspace @recoder/web",
+    "test": "npm run test --workspace @recoder/web",
+    "build": "npm run build --workspace @recoder/web",
+    "test:e2e": "npm run test:e2e --workspace @recoder/web",
+    "android:sync": "npm run build && cap sync android",
+    "android:open": "cap open android"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.0.0"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.0.0",
+    "@capacitor/core": "^8.0.0"
+  }
+}

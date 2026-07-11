@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Sina still serves the verified quote/search endpoints over HTTP. Keep the
+         exception limited to those hosts; all other traffic, including Yahoo and
+         Tencent, remains HTTPS-only. -->
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">hq.sinajs.cn</domain>
+        <domain includeSubdomains="false">suggest3.sinajs.cn</domain>
+    </domain-config>
+</network-security-config>

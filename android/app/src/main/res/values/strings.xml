@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">StockLedger</string>
+    <string name="title_activity_main">StockLedger</string>
+    <string name="package_name">com.recoder.stockledger</string>
+    <string name="custom_url_scheme">com.recoder.stockledger</string>
+</resources>

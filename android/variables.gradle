@@ -1,0 +1,19 @@
+ext {
+    minSdkVersion = 24
+    // API 35 is the verified toolchain used by the legacy Android application.
+    // The local API 36 platform is incomplete (missing core-for-system-modules.jar).
+    compileSdkVersion = 35
+    targetSdkVersion = 35
+    // Pin AndroidX to the API 35-compatible set used by the verified legacy app.
+    androidxActivityVersion = '1.9.3'
+    androidxAppCompatVersion = '1.7.0'
+    androidxCoordinatorLayoutVersion = '1.2.0'
+    androidxCoreVersion = '1.13.1'
+    androidxFragmentVersion = '1.8.5'
+    coreSplashScreenVersion = '1.0.1'
+    androidxWebkitVersion = '1.12.1'
+    junitVersion = '4.13.2'
+    androidxJunitVersion = '1.3.0'
+    androidxEspressoCoreVersion = '3.7.0'
+    cordovaAndroidVersion = '14.0.1'
+}

@@ -1,0 +1,113 @@
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+apply plugin: 'kotlin-kapt'
+
+import java.util.Properties
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.isFile()) {
+    localPropertiesFile.withInputStream { localProperties.load(it) }
+}
+def signingValue = { String key ->
+    def value = localProperties.getProperty(key)
+    return value?.trim() ? value.trim() : System.getenv(key)?.trim()
+}
+def signingKeys = ['RECODER_STORE_FILE', 'RECODER_STORE_PASSWORD', 'RECODER_KEY_ALIAS', 'RECODER_KEY_PASSWORD']
+def missingSigningKeys = signingKeys.findAll { signingValue(it) == null }
+def hasRecoderReleaseSigning = missingSigningKeys.isEmpty()
+
+android {
+    namespace = "com.recoder.stockledger"
+    compileSdk = rootProject.ext.compileSdkVersion
+    defaultConfig {
+        applicationId "com.recoder.stockledger"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 101
+        versionName "2.0.0"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    signingConfigs {
+        release {
+            if (hasRecoderReleaseSigning) {
+                storeFile file(signingValue('RECODER_STORE_FILE'))
+                storePassword signingValue('RECODER_STORE_PASSWORD')
+                keyAlias signingValue('RECODER_KEY_ALIAS')
+                keyPassword signingValue('RECODER_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        debug {
+            // Match the legacy debug application identity and default debug key.
+            applicationIdSuffix '.debug'
+            versionNameSuffix '-debug'
+            resValue 'string', 'app_name', 'StockLedger Debug'
+        }
+        release {
+            minifyEnabled false
+            if (hasRecoderReleaseSigning) {
+                signingConfig signingConfigs.release
+            }
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+        }
+    }
+    packaging {
+        resources {
+            excludes += ['META-INF/NOTICE.md', 'META-INF/LICENSE.md', 'META-INF/NOTICE', 'META-INF/LICENSE']
+        }
+    }
+}
+
+gradle.taskGraph.whenReady { graph ->
+    def needsReleaseSigning = graph.allTasks.any { task ->
+        def name = task.name.toLowerCase()
+        name.contains('release') && (name.contains('assemble') || name.contains('bundle') || name.contains('package') || name.contains('sign'))
+    }
+    if (needsReleaseSigning && !hasRecoderReleaseSigning) {
+        throw new GradleException("Release signing is missing: ${missingSigningKeys.join(', ')}. Set them in android/local.properties or environment variables.")
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    implementation "androidx.room:room-runtime:2.8.4"
+    implementation "androidx.room:room-ktx:2.8.4"
+    kapt "androidx.room:room-compiler:2.8.4"
+    // Kept locally so debug builds remain reproducible in restricted networks.
+    implementation files('libs/work-runtime-2.9.1.aar')
+    implementation files('libs/jakarta.mail-2.0.0.jar')
+    implementation files('libs/jakarta.activation-api-2.1.1.jar')
+    implementation "com.tom-roush:pdfbox-android:2.0.27.0"
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}
