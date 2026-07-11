@@ -4,7 +4,7 @@
 
 Recoder 用于记录股票、ETF、期权、现金和外汇相关流水，汇总多个券商与账本的持仓、成本和盈亏，并通过历史行情生成收益分析与个股日 K 线。应用无需账号和后端服务，正式账本保存在用户设备本地。
 
-> 项目正在进行跨平台重构和真机验收，GitHub Pages 与正式安装包尚未发布。
+> Web PWA 已通过 [GitHub Pages](https://xxofficial.github.io/Financial-Account-Recorder/) 发布；Android 仍在真机验收阶段，正式安装包尚未发布。
 
 ## 功能特性
 

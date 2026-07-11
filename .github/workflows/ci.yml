@@ -38,5 +38,5 @@ jobs:
       - run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - run: npm ci
       - run: npm run build && npx cap sync android
-      - run: ./gradlew :app:assembleDebug --no-daemon --console=plain
+      - run: bash ./gradlew :app:assembleDebug --no-daemon --console=plain
         working-directory: android

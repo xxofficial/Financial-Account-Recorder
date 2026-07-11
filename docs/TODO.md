@@ -7,7 +7,7 @@
 - 文本型 PDF 结单支持长桥、汇丰、uSMART 和嘉信。Web 使用 PDF.js，Android 使用 PDFBox；扫描件明确提示不支持。
 - Android 支持“分享至 Recoder”、Keystore 密钥、腾讯主源/新浪回退/Yahoo 期权、IMAP 手动与 WorkManager 后台同步，以及 Room 待确认收件箱。
 - Web 不提供邮件后台同步；数据管理页会说明平台能力差异。
-- GitHub Pages 工作流已配置完整校验门禁；首次推送后仍需在仓库设置中选择 GitHub Actions 作为 Pages 来源。
+- Web PWA 已通过 GitHub Pages 发布：<https://xxofficial.github.io/Financial-Account-Recorder/>。部署工作流包含 lint、类型检查、单元测试、端到端测试和生产构建门禁。
 
 ## 已完成验证
 
@@ -22,9 +22,9 @@
 - 在实际 Android 设备安装 debug APK，验证分享 PDF/文本、PDF 密码输入、邮件配置、手动同步与 WorkManager 唤醒。
 - 待网络代理稳定后，用迁移样本中的未到期期权复核 Yahoo Cookie/crumb 取价与历史 K。插件已保留旧版的会话刷新重试逻辑。
 - 确定正式签名密钥后，配置 release signing、递增 `versionCode`，并执行签名 AAB/APK 构建。
-- GitHub Pages 首次上线后验证项目子路径、PWA 安装入口与离线重新打开。
+- 在桌面与手机浏览器继续验证 PWA 安装入口、安装后启动和离线重新打开。
 
-## 新 GitHub 仓库发布待办
+## GitHub 发布待办
 
 - 新发布源已确定为 `xxofficial/Financial-Account-Recorder`；本地应用内更新仅查询该仓库。
 - 配置签名 APK 发布工作流：Release APK 必须命名为 `recoder-v<versionName>-<versionCode>.apk`，例如 `recoder-v2.0.1-102.apk`。客户端拒绝无法解析 `versionCode` 的 APK。
