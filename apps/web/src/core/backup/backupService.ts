@@ -306,6 +306,7 @@ export class BackupService {
     let transactionCount = 0;
     let duplicateCount = 0;
     let conflictCount = 0;
+    let firstImportedTransactionLedgerId: number | undefined;
     const dates = incoming.transactions.map((tx) => tx.tradeDate).filter(Boolean).sort();
     await db.transaction('rw', [db.ledgers, db.transactions, db.appSettings, db.backupImportRecords], async () => {
       if (mode === 'OVERWRITE') {
@@ -355,10 +356,11 @@ export class BackupService {
           duplicateCount++;
           continue;
         }
+        const localLedgerId = ledgerIdBySyncId.get(tx.ledgerSyncId) ?? fallbackLedgerId;
         const local: Transaction = {
           syncId: tx.syncId,
           sourceFingerprint: effectiveFingerprint,
-          ledgerId: ledgerIdBySyncId.get(tx.ledgerSyncId) ?? fallbackLedgerId,
+          ledgerId: localLedgerId,
           tradeType: tx.tradeType,
           platform: tx.platform,
           sourceChannel: tx.sourceChannel,
@@ -392,12 +394,21 @@ export class BackupService {
         await db.transactions.add(local);
         existing.push(local);
         transactionCount++;
+        firstImportedTransactionLedgerId ??= localLedgerId;
       }
       if (mode === 'OVERWRITE') {
         await db.appSettings.put({ key: 'display_currency', value: incoming.displayCurrency, updatedAt: now() });
         await db.appSettings.put({ key: 'enabled_platforms', value: incoming.enabledPlatforms, updatedAt: now() });
         await db.appSettings.put({ key: 'platform_fee_plan_selections', value: incoming.feePlanSelections, updatedAt: now() });
       }
+
+      // A restored backup can receive different auto-incremented ledger IDs after
+      // an overwrite. Keep the selected ledger pointing at imported data so the
+      // portfolio and transaction pages do not filter against a deleted ledger.
+      if (mode === 'OVERWRITE' || transactionCount > 0) {
+        await db.appSettings.put({ key: 'default_ledger', value: firstImportedTransactionLedgerId ?? fallbackLedgerId, updatedAt: now() });
+      }
+
       await db.backupImportRecords.add({
         fileName,
         importedAt: now(),

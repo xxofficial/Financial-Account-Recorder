@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '../db/localDb';
-import { marketCacheManager } from '../core/market/marketCacheManager';
+import { marketCacheManager, marketTodayForHistoricalSync } from '../core/market/marketCacheManager';
 import { HistoricalBar } from '../db/schema';
 
 function createTestBar(
@@ -395,18 +395,42 @@ describe('MarketCacheManager', () => {
       },
     ]);
 
-    const summary = await marketCacheManager.detectAndQueueMissingRanges();
+    const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
     expect(summary.queued).toBe(1);
     expect(summary.items).toHaveLength(1);
     expect(summary.items[0].securityKey).toBe('US:AAPL');
     expect(summary.items[0].fromDate).toBe('2024-01-02');
-    expect(summary.items[0].toDate).toBe('2024-01-10');
+    expect(summary.items[0].toDate).toBe('2026-07-12');
 
     const items = await db.marketWorkItems.where('kind').equals('historical_range_fill').toArray();
     expect(items).toHaveLength(1);
     expect(items[0].status).toBe('pending');
     expect(items[0].requiredFromDate).toBe('2024-01-02');
-    expect(items[0].requiredToDate).toBe('2024-01-10');
+    expect(items[0].requiredToDate).toBe('2026-07-12');
+  });
+
+  it('extends HK history through the market-local current date after the last transaction', async () => {
+    await db.transactions.bulkAdd([
+      { ledgerId: 1, tradeType: 'BUY', platform: 'MANUAL', market: 'HK', symbol: '7709', name: '7709', tradeDate: '2026-06-01', tradeTime: '10:00:00', price: 100, quantity: 10, commission: 0, tax: 0, createdAt: Date.now(), updatedAt: Date.now(), assetType: 'STOCK' } as any,
+      { ledgerId: 1, tradeType: 'SELL', platform: 'MANUAL', market: 'HK', symbol: '7709', name: '7709', tradeDate: '2026-06-23', tradeTime: '10:00:00', price: 110, quantity: 9, commission: 0, tax: 0, createdAt: Date.now(), updatedAt: Date.now(), assetType: 'STOCK' } as any,
+    ]);
+
+    const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
+
+    expect(summary.items).toContainEqual({ securityKey: 'HK:7709', fromDate: '2026-06-01', toDate: '2026-07-12' });
+    const item = await db.marketWorkItems.get('hist_fill_HK_7709_2026-06-01_2026-07-12');
+    expect(item?.fetchToDate).toBe('2026-07-12');
+  });
+
+  it('ends a fully closed HK position at its liquidation date', async () => {
+    await db.transactions.bulkAdd([
+      { ledgerId: 1, tradeType: 'BUY', platform: 'MANUAL', market: 'HK', symbol: '7709', name: '7709', tradeDate: '2026-06-01', tradeTime: '10:00:00', price: 100, quantity: 10, commission: 0, tax: 0, createdAt: Date.now(), updatedAt: Date.now(), assetType: 'STOCK' } as any,
+      { ledgerId: 1, tradeType: 'SELL', platform: 'MANUAL', market: 'HK', symbol: '7709', name: '7709', tradeDate: '2026-06-23', tradeTime: '10:00:00', price: 110, quantity: 10, commission: 0, tax: 0, createdAt: Date.now(), updatedAt: Date.now(), assetType: 'STOCK' } as any,
+    ]);
+
+    const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
+
+    expect(summary.items).toContainEqual({ securityKey: 'HK:7709', fromDate: '2026-06-01', toDate: '2026-06-23' });
   });
 
   it('should filter out non-quotable records like CASH, CUSTODY, INTEREST', async () => {
@@ -648,7 +672,7 @@ describe('MarketCacheManager', () => {
     expect(items).toHaveLength(1);
     expect(items[0].securityKey).toBe('US:AAPL');
     expect(items[0].requiredFromDate).toBe('2024-01-05');
-    expect(items[0].requiredToDate).toBe('2024-01-20');
+    expect(items[0].requiredToDate).toBe(marketTodayForHistoricalSync('US'));
     expect(items[0].status).toBe('pending');
   });
 
@@ -752,7 +776,7 @@ describe('MarketCacheManager', () => {
     expect(items).toHaveLength(1);
     expect(items[0].securityKey).toBe('US:AAPL');
     expect(items[0].requiredFromDate).toBe('2024-01-02');
-    expect(items[0].requiredToDate).toBe('2024-01-02');
+    expect(items[0].requiredToDate).toBe(marketTodayForHistoricalSync('US'));
   });
 
   it('should not queue a task when no quotable transactions exist for the security', async () => {

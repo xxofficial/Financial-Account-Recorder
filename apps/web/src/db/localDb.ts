@@ -17,6 +17,7 @@ import {
   OptionDailyBar,
   OptionDailyBarCoverage,
 } from './schema';
+import { isAndroidNativeRuntime } from '../platform/nativeRuntime';
 
 export class LocalDatabase extends Dexie {
   ledgers!: Table<Ledger, number>;
@@ -159,6 +160,45 @@ export class LocalDatabase extends Dexie {
       optionDailyBars: 'id, contractKey, occSymbol, providerSymbol, tradeDate, [contractKey+tradeDate], [occSymbol+tradeDate], [underlying+tradeDate], [expirationDate+tradeDate]',
       optionDailyBarCoverage: '++id, contractKey, [contractKey+fromDate], [contractKey+toDate]',
     });
+
+    // Version 8: Register the keyless Android source for existing native installs.
+    // It stays disabled on the web, where normal browser CORS restrictions apply.
+    this.version(8).stores({
+      ledgers: '++id, syncId, name, type, createdAt',
+      transactions: '++id, syncId, sourceFingerprint, ledgerId, tradeDate, symbol, market, platform, [ledgerId+tradeDate], [market+symbol], [platform+externalReference]',
+      quoteSnapshots: 'id, symbol, market, [market+symbol]',
+      historicalDailyBars: 'id, symbol, market, date, [market+symbol+date], [symbol+market+assetType+date]',
+      marketProviderConfigs: 'provider, enabled, priority',
+      appSettings: 'key',
+      backupImportRecords: '++id, fileName, importedAt',
+      marketRequestLogs: '++id, providerId, type, createdAt',
+      historicalBars: 'id, securityKey, symbol, market, assetType, resolution, tradeDate, [securityKey+resolution+tradeDate]',
+      historicalCoverage: '++id, securityKey, [securityKey+resolution], updatedAt',
+      marketWorkItems: 'id, kind, status, priority, nextRetryAt, securityKey, contractKey, [securityKey+kind], [contractKey+kind], [status+priority]',
+      marketProviderQuotaStates: 'providerId',
+      marketExecutorState: 'id',
+      optionContracts: '++id, contractKey, occSymbol, providerSymbol, underlying, expirationDate, [underlying+expirationDate], [underlying+expirationDate+side+strike]',
+      optionDailyBars: 'id, contractKey, occSymbol, providerSymbol, tradeDate, [contractKey+tradeDate], [occSymbol+tradeDate], [underlying+tradeDate], [expirationDate+tradeDate]',
+      optionDailyBarCoverage: '++id, contractKey, [contractKey+fromDate], [contractKey+toDate]',
+    }).upgrade(async (tx) => {
+      if (!isAndroidNativeRuntime()) return;
+
+      const configs = tx.table('marketProviderConfigs');
+      const existing = await configs.get('android-default');
+      if (!existing) {
+        const now = Date.now();
+        await configs.put({
+          provider: 'android-default',
+          enabled: 1,
+          priority: 0,
+          apiKey: '',
+          baseUrl: '',
+          optionsJson: '{"keyless":true}',
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    });
   }
 }
 
@@ -184,6 +224,16 @@ db.on('populate', (tx) => {
   });
 
   tx.table('marketProviderConfigs').bulkAdd([
+    {
+      provider: 'android-default',
+      enabled: isAndroidNativeRuntime() ? 1 : 0,
+      priority: 0,
+      apiKey: '',
+      baseUrl: '',
+      optionsJson: '{"keyless":true}',
+      createdAt: Date.now(),
+      updatedAt: Date.now()
+    },
     {
       provider: 'itick',
       enabled: 0,

@@ -43,6 +43,20 @@ export interface HistoricalRequestPlan {
 
 export const INITIAL_CAPABILITIES: ProviderCapability[] = [
   {
+    providerId: 'android-default',
+    supportsRealtimeQuotes: true,
+    supportsHistorical: true,
+    supportsSymbolRange: true,
+    supportsMultiSymbolSameRange: true,
+    supportsMultiSymbolSameDate: false,
+    supportsRecentLimit: true,
+    supportsAssetTypes: ['stock', 'option'],
+    supportsMarkets: ['A_SHARE', 'HK', 'US'],
+    maxSymbolsPerRequest: 8,
+    costModel: 'unknown',
+    quotaDetection: 'manual_default'
+  },
+  {
     providerId: 'twelvedata',
     supportsRealtimeQuotes: true,
     supportsHistorical: true,
@@ -105,7 +119,7 @@ export class HistoricalRequestPlanner {
 
     // Filter to get only enabled and non-cooldown providers
     const activeProviders = providerConfigs
-      .filter(c => c.enabled === 1 && c.apiKey.trim() !== '')
+      .filter(c => c.enabled === 1 && (c.apiKey.trim() !== '' || c.provider === 'android-default'))
       .map(c => {
         const capability = providerCapabilities.find(cap => cap.providerId === c.provider);
         const quota = quotaStates.find(q => q.providerId === c.provider);

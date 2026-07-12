@@ -101,7 +101,7 @@ export interface HistoricalDailyBar {
 }
 
 export interface MarketProviderConfig {
-  provider: 'itick' | 'twelvedata' | 'marketdata';
+  provider: 'itick' | 'twelvedata' | 'marketdata' | 'android-default';
   enabled: number; // 1 = enabled, 0 = disabled (IndexedDB cannot index booleans)
   priority: number;
   apiKey: string;

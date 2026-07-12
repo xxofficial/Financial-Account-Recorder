@@ -1,5 +1,5 @@
 import { db } from '../../db/localDb';
-import { HistoricalBar, HistoricalCoverage, MarketWorkItem } from '../../db/schema';
+import { HistoricalBar, HistoricalCoverage, MarketWorkItem, Transaction } from '../../db/schema';
 import {
   HistoricalBarImport,
   MarketCachePackageV1,
@@ -10,6 +10,7 @@ import {
 import { HistoricalGapAnalyzer } from './HistoricalGapAnalyzer';
 import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
+import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
 
 export interface ImportMarketCacheOptions {
   overwrite?: boolean;
@@ -33,6 +34,28 @@ export interface MarketCacheImportReport {
 }
 
 const RESOLUTION = '1d' as const;
+
+const MARKET_TIME_ZONES: Record<string, string> = {
+  US: 'America/New_York',
+  HK: 'Asia/Hong_Kong',
+  A_SHARE: 'Asia/Shanghai',
+};
+
+/**
+ * Return the calendar date that applies to a market, rather than the device's
+ * UTC date. A range may end on a weekend or holiday; the provider simply
+ * returns the last available trading-day bar within that range.
+ */
+export function marketTodayForHistoricalSync(market: string, referenceAt = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: MARKET_TIME_ZONES[market] ?? 'UTC',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(referenceAt);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value;
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
 
 function makeSecurityKey(symbol: string, market: string): string {
   return `${market}:${symbol}`;
@@ -65,11 +88,17 @@ interface HistoricalRangeRequest {
 
 /**
  * 从交易记录中提取需要行情数据的证券/期权，按标的聚合为单一历史区间请求。
+ * 区间从首笔可报价交易日延伸到该市场本地的今天。
  * 过滤掉现金、利息、转账、外汇等非行情记录。
  */
 function getHistoricalRangeRequestsFromTransactions(
-  transactions: Array<{ symbol?: string | null; market?: string | null; assetType?: string | null; tradeType?: string | null; tradeDate?: string | null }>
+  transactions: Transaction[],
+  referenceAt = new Date(),
 ): HistoricalRangeRequest[] {
+  // Reuse the same quantity semantics as the portfolio page (including
+  // transfers, splits, options and short positions) when deciding whether a
+  // security remains open today.
+  const positions = new PortfolioCalculator().calculate(transactions, [], { usdToCny: 1, hkdToCny: 1 }).positions;
   const groups = new Map<
     string,
     { symbol: string; market: string; assetType: 'stock' | 'option'; dates: Set<string> }
@@ -107,7 +136,9 @@ function getHistoricalRangeRequestsFromTransactions(
       market: info.market,
       assetType: info.assetType,
       fromDate: dates[0],
-      toDate: dates[dates.length - 1],
+      toDate: Math.abs(positions[key]?.quantity ?? 0) > 1e-5
+        ? marketTodayForHistoricalSync(info.market, referenceAt)
+        : dates[dates.length - 1],
     });
   }
 
@@ -446,11 +477,11 @@ export class MarketCacheManager {
 
   /**
    * 检测所有交易标的的历史缺口并写入队列（但不启动执行器）。
-   * 每个证券/期权只生成一条请求，覆盖该标的所有交易记录的时间范围。
+   * 每个证券/期权只生成一条请求，从首笔交易覆盖到市场本地的今天。
    */
-  async detectAndQueueMissingRanges(): Promise<{ queued: number; items: { securityKey: string; fromDate: string; toDate: string }[] }> {
+  async detectAndQueueMissingRanges(referenceAt = new Date()): Promise<{ queued: number; items: { securityKey: string; fromDate: string; toDate: string }[] }> {
     const transactions = await db.transactions.toArray();
-    const requests = getHistoricalRangeRequestsFromTransactions(transactions);
+    const requests = getHistoricalRangeRequestsFromTransactions(transactions, referenceAt);
 
     const newItems: MarketWorkItem[] = [];
     const result: { securityKey: string; fromDate: string; toDate: string }[] = [];

@@ -3,12 +3,14 @@ import { MarketProviderQuotaState, QuoteSnapshot, MarketRequestStatus } from '..
 import { HistoricalRequestPlanner, INITIAL_CAPABILITIES, HistoricalRequestPlan } from './HistoricalRequestPlanner';
 import { ItickProvider } from './itickProvider';
 import { TwelvedataProvider } from './twelvedataProvider';
+import { AndroidDefaultMarketProvider } from './androidDefaultMarketProvider';
 import { MarketDataAppProvider } from './marketDataProvider';
 import { MarketDataProvider } from './marketDataProvider';
 import { logMarketRequest, MarketDataResult } from './marketRequestHelper';
 
 // Singletons
 const providers: Record<string, MarketDataProvider> = {
+  'android-default': new AndroidDefaultMarketProvider(),
   itick: new ItickProvider(),
   twelvedata: new TwelvedataProvider(),
   marketdata: new MarketDataAppProvider()

@@ -5,6 +5,7 @@ import { TwelvedataProvider } from '../core/market/twelvedataProvider';
 import { MarketDataAppProvider } from '../core/market/marketDataProvider';
 import { MarketDataCacheService } from '../core/market/marketDataCacheService';
 import { AndroidDefaultMarketProvider } from '../core/market/androidDefaultMarketProvider';
+import { HistoricalRequestPlanner, INITIAL_CAPABILITIES } from '../core/market/HistoricalRequestPlanner';
 
 describe('Market Data Providers and Cache Service', () => {
   const itick = new ItickProvider();
@@ -36,6 +37,51 @@ describe('Market Data Providers and Cache Service', () => {
   });
 
   describe('AndroidDefaultMarketProvider', () => {
+    it('plans historical sync without an API key when the Android source is enabled', () => {
+      const plans = HistoricalRequestPlanner.buildRequestPlans({
+        pendingItems: [{
+          id: 'hist_fill_HK_00700_2026-07-01_2026-07-03',
+          kind: 'historical_range_fill',
+          securityKey: 'HK:00700',
+          symbol: '00700',
+          market: 'HK',
+          assetType: 'stock',
+          resolution: '1d',
+          requiredFromDate: '2026-07-01',
+          requiredToDate: '2026-07-03',
+          fetchFromDate: '2026-07-01',
+          fetchToDate: '2026-07-03',
+          sourceReason: 'manual',
+          priority: 850,
+          status: 'pending',
+          attemptCount: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }],
+        providerConfigs: [{
+          provider: 'android-default',
+          enabled: 1,
+          priority: 0,
+          apiKey: '',
+          baseUrl: '',
+          optionsJson: '{"keyless":true}',
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }],
+        providerCapabilities: INITIAL_CAPABILITIES,
+        quotaStates: [],
+        now: Date.now(),
+      });
+
+      expect(plans).toHaveLength(1);
+      expect(plans[0]).toMatchObject({
+        providerId: 'android-default',
+        strategy: 'multi_symbol_same_range',
+        fromDate: '2026-07-01',
+        toDate: '2026-07-03',
+      });
+    });
+
     it('falls back to Yahoo chart metadata when the authenticated option quote endpoint is unavailable', async () => {
       const mockFetch = vi.fn().mockImplementation((url: string) => {
         if (url.includes('/v7/finance/quote')) {
@@ -65,6 +111,34 @@ describe('Market Data Providers and Cache Service', () => {
         symbol: 'MARA 260717C17', currentPrice: 2.5, previousClose: 2, provider: 'yahoo-chart-fallback',
       });
       expect(mockFetch).toHaveBeenCalledTimes(2);
+    });
+
+    it('limits Tencent historical requests to 800 rows', async () => {
+      const mockFetch = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        code: 0,
+        data: { hk00700: { qfqday: [['2025-05-20', '500', '510', '515', '495', '1000']] } },
+      }), { status: 200 }));
+      vi.stubGlobal('fetch', mockFetch);
+
+      const result = await androidDefault.fetchHistoricalBars('00700', 'HK', 'STOCK', '2025-05-20', '2025-05-20');
+
+      expect(result.ok).toBe(true);
+      expect(result.data).toHaveLength(1);
+      expect(mockFetch.mock.calls[0][0]).toContain('hk00700,day,,,800,qfq');
+    });
+
+    it('treats Tencent business errors as failures instead of empty coverage', async () => {
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({
+        code: 1,
+        msg: 'bad params',
+        data: [],
+      }), { status: 200 })));
+
+      const result = await androidDefault.fetchHistoricalBars('00700', 'HK', 'STOCK', '2025-05-20', '2025-05-20');
+
+      expect(result.ok).toBe(false);
+      expect(result.status).toBe('failed');
+      expect(result.message).toContain('bad params');
     });
   });
 

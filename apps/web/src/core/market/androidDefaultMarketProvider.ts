@@ -10,6 +10,9 @@ const REQUEST_HEADERS = {
   'User-Agent': 'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/120 Safari/537.36',
 };
 
+// Tencent rejects history requests above 800 rows with `code: 1, msg: bad params`.
+const TENCENT_HISTORY_MAX_ROWS = 800;
+
 function tencentCode(item: SecurityRequest): string | null {
   const symbol = item.symbol.split('.')[0];
   if (item.market === 'A_SHARE') return `${symbol.startsWith('6') ? 'sh' : 'sz'}${symbol}`;
@@ -222,13 +225,16 @@ export class AndroidDefaultMarketProvider implements MarketDataProvider {
       'tencent', 'history', symbol, market, assetType, 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get', 15_000,
       async () => {
         const endpoint = market === 'HK' ? 'https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get' : 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
-        const response = await nativeMarketFetch(`${endpoint}?param=${historyCode},day,,,3200,qfq`, { headers: REQUEST_HEADERS });
+        const response = await nativeMarketFetch(`${endpoint}?param=${historyCode},day,,,${TENCENT_HISTORY_MAX_ROWS},qfq`, { headers: REQUEST_HEADERS });
         return { response, parseData: async (resp) => this.parseTencentHistory(await resp.json(), symbol, market, assetType, startDate, endDate) };
       },
     );
   }
 
-  private parseTencentHistory(json: { data?: Record<string, { qfqday?: unknown[][]; day?: unknown[][] }> }, symbol: string, market: string, assetType: 'STOCK' | 'OPTION', start: string, end: string): HistoricalDailyBar[] {
+  private parseTencentHistory(json: { code?: number; msg?: string; data?: Record<string, { qfqday?: unknown[][]; day?: unknown[][] }> }, symbol: string, market: string, assetType: 'STOCK' | 'OPTION', start: string, end: string): HistoricalDailyBar[] {
+    if (json.code !== undefined && json.code !== 0) {
+      throw new Error(`腾讯行情接口返回错误${json.msg ? `: ${json.msg}` : ''}`);
+    }
     const payload = json.data && Object.values(json.data)[0];
     const rows = payload?.qfqday ?? payload?.day ?? [];
     return rows.flatMap((row) => {

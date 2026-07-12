@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
@@ -10,6 +10,7 @@ import {
   AlertTriangle,
   FileText,
   CheckCircle,
+  LoaderCircle,
   History,
   Calendar,
   Layers,
@@ -36,6 +37,9 @@ export default function ImportExportPage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [previewData, setPreviewData] = useState<BackupPreview | null>(null);
   const [importStatus, setImportStatus] = useState<'IDLE' | 'SUCCESS' | 'ERROR'>('IDLE');
+  const [isImporting, setIsImporting] = useState(false);
+  const [importMessage, setImportMessage] = useState('');
+  const importInFlightRef = useRef(false);
   const [errorMessage, setErrorMessage] = useState<string>('');
   const [showOverwriteConfirm, setShowOverwriteConfirm] = useState(false);
   const [typedConfirm, setTypedConfirm] = useState('');
@@ -161,6 +165,7 @@ export default function ImportExportPage() {
           const preview = backupService.parseBackup(content);
           setPreviewData(preview);
           setImportStatus('IDLE');
+          setImportMessage('');
           setErrorMessage('');
         } catch (err: any) {
           setErrorMessage(err.message || '解析备份文件失败，请确保是标准的 JSON 格式文件！');
@@ -197,9 +202,18 @@ export default function ImportExportPage() {
       return;
     }
 
+    // The ref becomes true synchronously, before React has a chance to render
+    // disabled controls, so rapid taps cannot start duplicate imports.
+    if (importInFlightRef.current) return;
+
+    importInFlightRef.current = true;
+    setIsImporting(true);
+    setImportStatus('IDLE');
+    setImportMessage('正在写入账本和流水，请勿重复点击或关闭应用。');
     try {
-      await backupService.importBackup(previewData.rawParsedData, mode, selectedFile.name);
+      const result = await backupService.importBackup(previewData.rawParsedData, mode, selectedFile.name);
       setImportStatus('SUCCESS');
+      setImportMessage(`导入完成：新增 ${result.transactionCount} 笔，重复 ${result.duplicateCount} 笔，冲突 ${result.conflictCount} 笔。已切换至导入账本。`);
       setPreviewData(null);
       setSelectedFile(null);
       setShowOverwriteConfirm(false);
@@ -210,6 +224,9 @@ export default function ImportExportPage() {
       setImportStatus('ERROR');
       setShowOverwriteConfirm(false);
       setTypedConfirm('');
+    } finally {
+      importInFlightRef.current = false;
+      setIsImporting(false);
     }
   };
 
@@ -370,9 +387,17 @@ export default function ImportExportPage() {
             type="file" 
             accept=".json"
             onChange={handleFileChange}
-            style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: 'pointer' }} 
+            disabled={isImporting}
+            style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: isImporting ? 'not-allowed' : 'pointer' }}
           />
         </div>
+
+        {isImporting && (
+          <div role="status" aria-live="polite" style={{ padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.8rem' }}>
+            <LoaderCircle size={16} className="spin" style={{ flexShrink: 0, color: 'var(--accent)' }} />
+            <div>{importMessage}</div>
+          </div>
+        )}
 
         {/* Error Alert */}
         {importStatus === 'ERROR' && errorMessage && (
@@ -386,7 +411,8 @@ export default function ImportExportPage() {
         {importStatus === 'SUCCESS' && (
           <div style={{ padding: '0.75rem', backgroundColor: 'var(--color-success-bg)', border: '1px solid var(--color-success-border)', borderRadius: '8px', display: 'flex', gap: '0.5rem', color: '#a7f3d0', fontSize: '0.8rem', alignItems: 'center' }}>
             <CheckCircle size={16} style={{ flexShrink: 0 }} />
-            <div>数据备份恢复成功！对应的账本与流水已刷新。</div>
+            <div style={{ flex: 1 }}>{importMessage || '数据备份恢复成功！对应的账本与流水已刷新。'}</div>
+            <button type="button" onClick={() => navigate('/')} style={{ padding: '0.3rem 0.55rem', fontSize: '0.75rem', whiteSpace: 'nowrap' }}>查看持仓</button>
           </div>
         )}
 
@@ -496,12 +522,14 @@ export default function ImportExportPage() {
                 <div style={{ display: 'flex', gap: '0.5rem' }}>
                   <button 
                     onClick={() => handleImport('APPEND')}
+                    disabled={isImporting}
                     style={{ flex: 1, backgroundColor: 'var(--bg-input)', borderColor: 'var(--border-color)' }}
                   >
                     追加导入
                   </button>
                   <button 
                     onClick={() => handleImport('OVERWRITE')}
+                    disabled={isImporting}
                     className="danger"
                     style={{ flex: 1 }}
                   >
@@ -543,7 +571,7 @@ export default function ImportExportPage() {
                 />
                 <div style={{ display: 'flex', gap: '0.5rem', marginTop: '0.25rem' }}>
                   <button 
-                    disabled={typedConfirm !== 'OVERWRITE'}
+                    disabled={typedConfirm !== 'OVERWRITE' || isImporting}
                     onClick={() => handleImport('OVERWRITE')}
                     className="danger" 
                     style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
@@ -551,6 +579,7 @@ export default function ImportExportPage() {
                     解锁并执行覆盖
                   </button>
                   <button 
+                    disabled={isImporting}
                     onClick={() => { setShowOverwriteConfirm(false); setTypedConfirm(''); }}
                     style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}
                   >

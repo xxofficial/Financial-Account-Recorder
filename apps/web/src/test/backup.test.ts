@@ -226,6 +226,7 @@ describe('Backup and Restore Service', () => {
 
   it('should handle OVERWRITE import successfully', async () => {
     // Setup initial data in DB that should be cleared
+    await db.appSettings.put({ key: 'default_ledger', value: 1, updatedAt: Date.now() });
     await db.transactions.add({
       ledgerId: 1,
       tradeType: 'BUY',
@@ -288,6 +289,11 @@ describe('Backup and Restore Service', () => {
     const ledgers = await db.ledgers.toArray();
     expect(ledgers).toHaveLength(1);
     expect(ledgers[0].name).toBe('New Imported Ledger');
+
+    // The previously selected ledger was deleted by overwrite; select the
+    // imported ledger so portfolio and transaction pages show restored data.
+    const defaultLedger = await db.appSettings.get('default_ledger');
+    expect(defaultLedger?.value).toBe(ledgers[0].id);
 
     // Verify settings updated
     const displayCurrency = await db.appSettings.get('display_currency');
