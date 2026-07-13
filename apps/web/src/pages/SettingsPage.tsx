@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { Key, Database, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Activity, Trash2, ListFilter, X, BarChart3, ChevronRight, ArrowUp, ArrowDown, Check } from 'lucide-react';
+import { Key, Database, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Activity, Trash2, ListFilter, X, ChevronRight, ArrowUp, ArrowDown, Check } from 'lucide-react';
 import { db } from '../db/localDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ItickProvider } from '../core/market/itickProvider';
@@ -21,7 +20,6 @@ import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 type ProviderName = 'itick' | 'twelvedata' | 'marketdata';
 
 export default function SettingsPage() {
-  const navigate = useNavigate();
   const isAndroid = isAndroidNativeRuntime();
   const { activePlatform, enabledPlatforms } = useAppShell();
   const [advancedOpen, setAdvancedOpen] = useState(false);
@@ -761,7 +759,7 @@ export default function SettingsPage() {
       </div>}
 
       <details className="settings-advanced settings-advanced-extra">
-      <summary><span><strong>存储与缓存</strong><small>本地存储保护和行情缓存管理</small></span><ChevronRight size={18} /></summary>
+      <summary><span><strong>存储与缓存</strong><small>本地存储保护与应用诊断</small></span><ChevronRight size={18} /></summary>
       {/* Storage and PWA Section */}
       <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -808,25 +806,6 @@ export default function SettingsPage() {
         )}
       </div>
 
-      {/* Market Cache Management Section */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <BarChart3 size={16} style={{ color: 'var(--accent)' }} />
-          行情缓存管理
-        </h3>
-        <p className="text-xs text-muted" style={{ marginTop: '-0.25rem' }}>
-          导入/导出历史行情缓存包、导出缺失清单、查看缓存覆盖范围并显式触发同步。
-        </p>
-        <button
-          type="button"
-          className="primary"
-          onClick={() => navigate('/market-cache')}
-          style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.35rem' }}
-        >
-          进入行情缓存管理
-          <ChevronRight size={14} />
-        </button>
-      </div>
       </details>
 
       {/* Log view Modal Drawer */}

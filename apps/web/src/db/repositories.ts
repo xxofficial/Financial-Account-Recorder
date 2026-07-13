@@ -4,6 +4,7 @@ import {
   Transaction, 
   QuoteSnapshot, 
   HistoricalDailyBar, 
+  HistoricalBar,
   MarketProviderConfig 
 } from './schema';
 
@@ -177,30 +178,56 @@ export class HistoricalDailyBarRepository {
     endDate: string
   ): Promise<HistoricalDailyBar[]> {
     // Look up via primary key string prefix pattern or simple query filters
-    return db.historicalDailyBars
-      .where('symbol')
-      .equals(symbol)
+    const bars = await db.historicalBars
+      .where('securityKey')
+      .equals(`${market}:${symbol}`)
       .filter(bar => 
-        bar.market === market && 
-        bar.assetType === assetType && 
-        bar.date >= startDate && 
-        bar.date <= endDate
+        bar.resolution === '1d' &&
+        bar.assetType === assetType.toLowerCase() &&
+        bar.tradeDate >= startDate &&
+        bar.tradeDate <= endDate
       )
-      .sortBy('date');
+      .sortBy('tradeDate');
+    return bars.map((bar) => ({
+      id: bar.id || `${bar.market}:${bar.symbol}:${bar.assetType}:${bar.tradeDate}`,
+      symbol: bar.symbol,
+      market: bar.market,
+      assetType: bar.assetType.toUpperCase() as 'STOCK' | 'OPTION',
+      date: bar.tradeDate,
+      open: bar.open ?? null,
+      high: bar.high ?? null,
+      low: bar.low ?? null,
+      close: bar.close,
+      volume: bar.volume ?? null,
+      provider: bar.providerId,
+      fetchedAt: bar.fetchedAt,
+    }));
   }
 
   async bulkUpsert(bars: Omit<HistoricalDailyBar, 'id' | 'fetchedAt'>[]): Promise<void> {
     const now = Date.now();
-    const rows = bars.map(bar => ({
-      ...bar,
-      id: `${bar.market}:${bar.symbol}:${bar.assetType}:${bar.date}`,
+    const rows: HistoricalBar[] = bars.map(bar => ({
+      id: `${bar.market}:${bar.symbol}:${bar.assetType.toLowerCase()}:1d:${bar.date}`,
+      securityKey: `${bar.market}:${bar.symbol}`,
+      symbol: bar.symbol,
+      market: bar.market,
+      assetType: bar.assetType.toLowerCase() as HistoricalBar['assetType'],
+      resolution: '1d',
+      tradeDate: bar.date,
+      open: bar.open ?? undefined,
+      high: bar.high ?? undefined,
+      low: bar.low ?? undefined,
+      close: bar.close,
+      volume: bar.volume ?? undefined,
+      providerId: bar.provider,
       fetchedAt: now,
+      dataQuality: 'normal',
     }));
-    await db.historicalDailyBars.bulkPut(rows);
+    await db.historicalBars.bulkPut(rows);
   }
 
   async clear(): Promise<void> {
-    await db.historicalDailyBars.clear();
+    await db.historicalBars.clear();
   }
 }
 

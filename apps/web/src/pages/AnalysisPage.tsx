@@ -5,13 +5,14 @@ import { ChevronDown, ChevronLeft, ChevronRight, Layers, PieChart as PieIcon } f
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
 import { useAppShell } from '../app/AppShell';
-import { ExchangeRates, PortfolioCalculator, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
+import { PortfolioCalculator, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
 import { AnalysisPoint, AnalysisRange, buildAnalysisStats, formatSignedDisplayAmount, resolveAnalysisRange } from '../core/portfolio/analysisUtils';
 import { analysisComputationCache, createAnalysisDataVersion } from '../core/portfolio/analysisCache';
+import { analysisRates, analysisRuntimeCache, readAnalysisInput, type AnalysisScope } from '../core/portfolio/analysisRuntime';
 import { BrokerPlatform, CurrencyType, DisplayCurrency, PlatformType } from '../shared/models';
 
 const calculator = new PortfolioCalculator();
-const rates: ExchangeRates = { usdToCny: 7.2, hkdToCny: 0.92 };
+const rates = analysisRates;
 const EMPTY_LIST: never[] = [];
 const ranges: { value: AnalysisRange; label: string }[] = [
   { value: 'ALL', label: '全部' }, { value: 'THIS_MONTH', label: '本月' }, { value: 'ONE_MONTH', label: '近1月' },
@@ -73,25 +74,42 @@ export default function AnalysisPage() {
   const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) ?? 1;
   const storedCurrency = useLiveQuery(async () => (await db.appSettings.get('display_currency'))?.value) ?? 'CNY';
   const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
-  const transactions = useLiveQuery(async () => {
-    const rows = activeLedgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(activeLedgerId as number).toArray();
-    return activePlatform === null ? rows : rows.filter((transaction) => transaction.platform === activePlatform);
-  }, [activeLedgerId, activePlatform]) ?? EMPTY_LIST;
-  const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY_LIST;
-  const historicalBars = useLiveQuery(() => db.historicalBars.where('resolution').equals('1d').toArray()) ?? EMPTY_LIST;
+  const analysisScope = useMemo<AnalysisScope>(() => ({
+    ledgerId: typeof activeLedgerId === 'number' ? activeLedgerId : 1,
+    platform: activePlatform,
+  }), [activeLedgerId, activePlatform]);
+  const cachedInput = analysisRuntimeCache.peek(analysisScope);
+  const analysisInput = useLiveQuery(
+    () => readAnalysisInput(analysisScope),
+    [analysisScope.ledgerId, analysisScope.platform],
+    cachedInput?.request,
+  );
+  const transactions = analysisInput?.transactions ?? EMPTY_LIST;
+  const quotes = analysisInput?.quotes ?? EMPTY_LIST;
+  const historicalBars = analysisInput?.bars ?? EMPTY_LIST;
+
+  useEffect(() => {
+    if (analysisInput) analysisRuntimeCache.remember(analysisScope, analysisInput);
+  }, [analysisInput, analysisScope]);
 
   const analysisVersion = useMemo(() => createAnalysisDataVersion({ transactions, quotes, bars: historicalBars }), [historicalBars, quotes, transactions]);
-  const analysisCacheKey = `${activeLedgerId}:${activePlatform ?? 'ALL'}:${analysisVersion}`;
+  const analysisCacheKey = `${analysisScope.ledgerId}:${analysisScope.platform ?? 'ALL'}:${analysisVersion}`;
 
   useEffect(() => {
     let subscribed = true;
-    setAnalysisLoading(true);
+    if (!analysisInput) {
+      setAnalysisLoading(true);
+      return () => { subscribed = false; };
+    }
+    const cachedPoints = analysisVersion ? analysisComputationCache.peek(analysisCacheKey) : undefined;
+    setAnalysisLoading(!cachedPoints);
     setAnalysisError('');
+    setAnalysisPoints(cachedPoints ?? []);
     void analysisComputationCache.get(analysisCacheKey, { transactions, quotes, bars: historicalBars, rates })
       .then((points) => { if (subscribed) { setAnalysisPoints(points); setAnalysisLoading(false); } })
       .catch(() => { if (subscribed) { setAnalysisPoints([]); setAnalysisError('分析数据计算失败，请稍后重试。'); setAnalysisLoading(false); } });
     return () => { subscribed = false; };
-  }, [analysisCacheKey, historicalBars, quotes, transactions]);
+  }, [analysisCacheKey, analysisInput, analysisVersion, historicalBars, quotes, transactions]);
 
   const allPoints = analysisPoints;
   const latestDate = allPoints.at(-1)?.date ?? new Date().toISOString().slice(0, 10);
@@ -134,6 +152,11 @@ export default function AnalysisPage() {
   const currency = displayCurrency.symbol;
   const calendarValue = (point: AnalysisPoint) => compactCalendarValue(calendarUnit === 'AMOUNT' ? point.dailyProfitCny / displayCurrency.cnyRate : point.dailyReturnPercent, calendarUnit);
   const setDisplayCurrency = (nextCurrency: CurrencyType) => void db.appSettings.put({ key: 'display_currency', value: nextCurrency, updatedAt: Date.now() });
+  const rankingQuery = new URLSearchParams({ range });
+  if (range === 'CUSTOM') {
+    if (customStart) rankingQuery.set('customStart', customStart);
+    if (customEnd) rankingQuery.set('customEnd', customEnd);
+  }
 
   return <div className="page tab-page analysis-page">
     <Segment options={ranges} value={range} onChange={setRange} />
@@ -146,7 +169,7 @@ export default function AnalysisPage() {
     <div className="analysis-metric-grid three"><MetricCard title="佣金/平台费" value={`${currency}${(fees.commission / displayCurrency.cnyRate).toFixed(2)}`} /><MetricCard title="税费" value={`${currency}${(fees.tax / displayCurrency.cnyRate).toFixed(2)}`} /><MetricCard title="交易次数" value={`${rangeTransactions.length} 笔`} /></div>
     <section className="analysis-chart-card"><Segment options={[{ value: 'RETURN', label: '收益率走势' }, { value: 'ASSET', label: '总资产趋势' }, { value: 'TRADE_COUNT', label: '交易次数' }]} value={metric} onChange={setMetric} /><div className="analysis-chart"><ResponsiveContainer width="100%" height="100%">{metric === 'TRADE_COUNT' ? <BarChart data={chartData} onClick={(event: any) => { const point = event?.activePayload?.[0]?.payload; if (point?.date) setSelectedDate(point.date); }}><XAxis dataKey="label" fontSize={10} tickLine={false} /><YAxis fontSize={10} tickLine={false} /><Bar dataKey="value" fill="#2563eb" radius={[4, 4, 0, 0]} /></BarChart> : <AreaChart data={chartData} onClick={(event: any) => { const point = event?.activePayload?.[0]?.payload; if (point?.date) setSelectedDate(point.date); }}><defs><linearGradient id="analysis-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={.24} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient></defs><XAxis dataKey="label" fontSize={10} tickLine={false} /><YAxis fontSize={10} tickLine={false} tickFormatter={(value) => metric === 'RETURN' ? `${value.toFixed(0)}%` : `${currency}${Math.round(value / displayCurrency.cnyRate)}`} /><Area type="monotone" dataKey="value" stroke="#2563eb" strokeWidth={2} fill="url(#analysis-fill)" /></AreaChart>}</ResponsiveContainer></div>{selectedPoint && <><div className="analysis-point-title">{selectedPoint.date}</div><div className="analysis-metric-grid two"><MetricCard title={metric === 'RETURN' ? '当天收益率' : metric === 'ASSET' ? '当天收益' : '买入/卖出'} value={metric === 'RETURN' ? `${selectedPoint.dailyReturnPercent.toFixed(2)}%` : metric === 'ASSET' ? signed(selectedPoint.dailyProfitCny, displayCurrency) : `${selectedPoint.dailyTradeCount} 笔`} trend={metric === 'RETURN' ? selectedPoint.dailyReturnPercent : selectedPoint.dailyProfitCny} /><MetricCard title={metric === 'RETURN' ? '累计收益率' : metric === 'ASSET' ? '累计收益' : '费用合计'} value={metric === 'RETURN' ? `${selectedPoint.cumulativeReturnPercent.toFixed(2)}%` : metric === 'ASSET' ? signed(selectedPoint.cumulativeProfitCny, displayCurrency) : `${currency}${((selectedPoint.dailyCommissionCny + selectedPoint.dailyTaxCny) / displayCurrency.cnyRate).toFixed(2)}`} trend={metric === 'RETURN' ? selectedPoint.cumulativeReturnPercent : selectedPoint.cumulativeProfitCny} /></div></>}</section>
     <section className="analysis-calendar-card"><h2>收益日历（{calendarUnit === 'AMOUNT' ? displayCurrency.code : '%'}）</h2><div className="analysis-calendar-controls"><Segment options={[{ value: 'DAY', label: '日' }, { value: 'WEEK', label: '周' }, { value: 'MONTH', label: '月' }, { value: 'YEAR', label: '年' }]} value={calendarMode} onChange={(value) => { setCalendarMode(value); setCalendarOffset(0); }} /><Segment options={[{ value: 'AMOUNT', label: '￥' }, { value: 'PERCENT', label: '%' }]} value={calendarUnit} onChange={setCalendarUnit} /></div><div className="analysis-calendar-nav"><button aria-label="上一页" onClick={() => setCalendarOffset((value) => value - 1)}><ChevronLeft /></button><strong>{calendar.title}</strong><button aria-label="下一页" onClick={() => setCalendarOffset((value) => value + 1)}><ChevronRight /></button></div><CalendarGrid calendar={calendar} mode={calendarMode} renderValue={calendarValue} onOpen={(date) => navigate(`/analysis/calendar/${calendarMode}/${date}`)} /></section>
-    <section className="analysis-ranking-card"><h2>区间盈亏排行</h2><div className="analysis-chip-row"><button className={showProfit ? 'active' : ''} onClick={() => setShowProfit(true)}>盈利 Top5</button><button className={!showProfit ? 'active' : ''} onClick={() => setShowProfit(false)}>亏损 Top5</button></div>{ranking.length ? <div className="analysis-ranking-list">{ranking.map((item, index) => <button key={`${item.market}:${item.symbol}`} onClick={() => navigate(`/analysis/stock/${item.symbol}/${item.market}`)}><span>{index + 1}</span><span><strong>{item.name}</strong><small>{item.symbol} · {item.market}</small></span><b className={item.profit >= 0 ? 'profit' : 'loss'}>{signed(item.profit, displayCurrency)}</b><ChevronRight size={18} /></button>)}</div> : <p>{showProfit ? '当前区间内没有盈利的股票' : '当前区间内没有亏损的股票'}</p>}<button className="analysis-full-ranking" onClick={() => navigate('/analysis/ranking')}>查看完整排行 &gt;</button></section>
+    <section className="analysis-ranking-card"><h2>区间盈亏排行</h2><div className="analysis-chip-row"><button className={showProfit ? 'active' : ''} onClick={() => setShowProfit(true)}>盈利 Top5</button><button className={!showProfit ? 'active' : ''} onClick={() => setShowProfit(false)}>亏损 Top5</button></div>{ranking.length ? <div className="analysis-ranking-list">{ranking.map((item, index) => <button key={`${item.market}:${item.symbol}`} onClick={() => navigate(`/analysis/stock/${item.symbol}/${item.market}`)}><span>{index + 1}</span><span><strong>{item.name}</strong><small>{item.symbol} · {item.market}</small></span><b className={item.profit >= 0 ? 'profit' : 'loss'}>{signed(item.profit, displayCurrency)}</b><ChevronRight size={18} /></button>)}</div> : <p>{showProfit ? '当前区间内没有盈利的股票' : '当前区间内没有亏损的股票'}</p>}<button className="analysis-full-ranking" onClick={() => navigate(`/analysis/ranking?${rankingQuery.toString()}`)}>查看完整排行 &gt;</button></section>
     {activeLedgerId === 0 && <><section className="analysis-allocation-card"><h2><PieIcon size={17} />资产市场分布</h2><Allocation rows={allocations.markets} displayCurrency={displayCurrency} /></section><section className="analysis-allocation-card"><h2><Layers size={17} />券商平台分布</h2><Allocation rows={allocations.platforms} displayCurrency={displayCurrency} /></section></>}
   </div>;
 }

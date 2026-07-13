@@ -1,31 +1,47 @@
-# 实施状态与发布前清单
+# Android / Web 差异、待办与发布清单
 
-## 首发范围（已实现）
+本文档是 Android 原项目与当前 React/Web 实现之间的能力状态来源。界面视觉规范见 [UI 视觉规范](./UI_VISUAL_GUIDELINES.md)，对应关系见 [Android / Web 映射](./ANDROID_WEB_MAPPING.md)。
+
+## 功能 TODO
+
+| 项目 | 当前行为 | 目标行为 | 平台与依赖 |
+| :--- | :--- | :--- | :--- |
+| 平台间资产转仓 | 可独立录入转入、转出流水；尚无将同一笔转仓关联起来的入口或逻辑。 | 创建配对流水，校验来源/目标平台和可转余额，并在账本计算中保持资产与现金一致。 | Android 与 Web；需先确认配对记录模型和编辑、删除语义。 |
+| 自动估算费用 | 交易录入页保留“自动估算”入口，平台费率配置可维护；不自动写入估算费用。 | 根据平台、市场、品种和交易参数计算佣金、平台费及税费，并让用户确认后写入表单。 | Android 与 Web；需确定费率数据来源、优惠规则与计算服务边界。 |
+| 精确交易日历 | 行情缺口和收益日历仅按周末近似休市。 | 按交易所节假日、半日市和交易时段判断应有的行情与“休市”状态。 | Android 与 Web；需接入可信交易日历数据源。 |
+| 公司行动自动化 | 支持手工录入拆股和期权到期。 | 自动同步拆股/合股事件，并提供过期期权的批量清理与结果确认。 | Android 与 Web；需明确公司行动行情源、幂等规则和用户确认流程。 |
+
+## UI / 交互对齐待审查
+
+以下项目不是当前功能缺陷，不提前实现；在交易录入页下一轮 Android 对齐审查时逐项确认。
+
+| 项目 | 当前状态 | 审查目标 |
+| :--- | :--- | :--- |
+| 卖出持仓候选 | 通过代码和市场手动选择标的。 | 对齐 Android 的可卖持仓候选、数量提示与快速带入。 |
+| 期权标的联想 | 期权字段可手工填写。 | 对齐 Android 的标的、到期日、行权价和看涨/看跌联动选择。 |
+
+## 平台差异（非 TODO）
+
+| 能力 | Android APK | Web / PWA | 说明 |
+| :--- | :--- | :--- | :--- |
+| 邮箱同步 | 支持多个邮箱配置、Keystore 密码保护、手动同步、WorkManager 后台任务和待确认收件箱。 | 不显示邮箱配置、同步入口或原生收件箱。 | IMAP 后台任务和安全凭据存储依赖 Android 原生能力；PWA 不模拟该能力。 |
+| 分享到应用 | 接收系统分享的 PDF/文本。 | 使用浏览器文件选择与分享能力。 | 入口不同，均保留导入前确认。 |
+| 密钥与后台任务 | 使用 Android Keystore 与 WorkManager。 | 使用浏览器安全存储与页面/PWA 生命周期。 | 不要求两端拥有相同的系统级实现。 |
+| 应用更新 | APK 可走 Android 发布与应用内更新策略。 | 由浏览器和 PWA 缓存策略更新。 | 发布流程不同，不视为功能遗漏。 |
+| 一级导航 | 固定“持仓 / 分析 / + / 数据 / 流水”。 | 固定“持仓 / 分析 / + / 数据 / 流水”。 | Android 原“操作”能力按此既定结构拆入“+”动作入口和“数据”页。 |
+
+## 已实现范围
 
 - Android 与 Web PWA 共用 React/TypeScript 账本、计算、行情缓存、K 线和 v5 备份逻辑。
 - 旧版 v4 仅可导入；新系统只导出 `recoder-backup-v5`。密钥、邮箱密码、PDF 密码、请求日志和行情缓存不进入备份。
 - 文本型 PDF 结单支持长桥、汇丰、uSMART 和嘉信。Web 使用 PDF.js，Android 使用 PDFBox；扫描件明确提示不支持。
 - Android 支持“分享至 Recoder”、Keystore 密钥、腾讯主源/新浪回退/Yahoo 期权、IMAP 手动与 WorkManager 后台同步，以及 Room 待确认收件箱。
-- Web 不提供邮件后台同步；数据管理页会说明平台能力差异。
 - Web PWA 已通过 GitHub Pages 发布：<https://xxofficial.github.io/Financial-Account-Recorder/>。部署工作流包含 lint、类型检查、单元测试、端到端测试和生产构建门禁。
 
-## 已完成验证
-
-- `npm run lint`、`npm run typecheck`、`npm run test`（含本地 v4 迁移与四家券商文本夹具）通过。
-- `npm run build`、`npm run test:e2e` 通过；Playwright 使用本地嘉信 PDF 验证浏览器提取、行重建与候选交易预览。
-- 390px、414px、430px 的持仓首页视觉回归基线已建立，并纳入 Playwright。
-- Android `:app:assembleDebug --offline` 通过；离线构建依赖已随工程保留。
-- 腾讯使用迁移样本中的真实港股代码验证了实时行情与日 K 返回。
-
-## 发布前仍需人工验收
+## 发布前人工验收
 
 - 在实际 Android 设备安装 debug APK，验证分享 PDF/文本、PDF 密码输入、邮件配置、手动同步与 WorkManager 唤醒。
-- 待网络代理稳定后，用迁移样本中的未到期期权复核 Yahoo Cookie/crumb 取价与历史 K。插件已保留旧版的会话刷新重试逻辑。
+- 待网络代理稳定后，用迁移样本中的未到期期权复核 Yahoo Cookie/crumb 取价与历史 K。
 - 确定正式签名密钥后，配置 release signing、递增 `versionCode`，并执行签名 AAB/APK 构建。
 - 在桌面与手机浏览器继续验证 PWA 安装入口、安装后启动和离线重新打开。
-
-## GitHub 发布待办
-
-- 新发布源已确定为 `xxofficial/Financial-Account-Recorder`；本地应用内更新仅查询该仓库。
-- 配置签名 APK 发布工作流：Release APK 必须命名为 `recoder-v<versionName>-<versionCode>.apk`，例如 `recoder-v2.0.1-102.apk`。客户端拒绝无法解析 `versionCode` 的 APK。
-- 以真实设备验证：启动时静默检查、设置页手动检查、同一正式签名覆盖升级，以及未知来源安装授权提示。
+- 新发布源已确定为 `xxofficial/Financial-Account-Recorder`；正式 APK 须命名为 `recoder-v<versionName>-<versionCode>.apk`，客户端拒绝无法解析 `versionCode` 的 APK。

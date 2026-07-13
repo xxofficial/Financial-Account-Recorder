@@ -9,6 +9,7 @@ import { cacheService } from '../core/market/marketDataCacheService';
 import { isAndroidNativeRuntime, nativeAppUpdate, type NativeAppUpdate } from '../platform/nativeRuntime';
 import { BrokerPlatform, CurrencyType, DisplayCurrency, PlatformType } from '../shared/models';
 import { ExchangeRates, PortfolioCalculator } from '../core/portfolio/portfolioCalculator';
+import { analysisRuntimeCache } from '../core/portfolio/analysisRuntime';
 import { useEdgeSwipeBack } from '../components/SecondaryPageHeader';
 
 interface AppShellProps { children: React.ReactNode; }
@@ -206,6 +207,7 @@ export default function AppShell({ children }: AppShellProps) {
   const themePreference = useLiveQuery(async () => (await db.appSettings.get('theme_preference'))?.value) ?? 'system';
   const selectedPlatformValue = useLiveQuery(async () => (await db.appSettings.get('selected_platform'))?.value) ?? null;
   const enabledPlatformsValue = useLiveQuery(async () => (await db.appSettings.get('enabled_platforms'))?.value);
+  const selectedLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value) ?? 1;
   const activePlatform = typeof selectedPlatformValue === 'string' && selectedPlatformValue in BrokerPlatform
     ? selectedPlatformValue as PlatformType
     : null;
@@ -254,6 +256,13 @@ export default function AppShell({ children }: AppShellProps) {
     return () => media.removeEventListener?.('change', onChange);
   }, [themePreference]);
   useEffect(() => { void prepareMarketSyncOnAppOpen().catch((error) => console.warn('行情启动检查失败', error)); }, []);
+  useEffect(() => {
+    if (typeof selectedLedgerId !== 'number') return;
+    const timer = window.setTimeout(() => {
+      analysisRuntimeCache.warm({ ledgerId: selectedLedgerId, platform: activePlatform });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [activePlatform, selectedLedgerId]);
   useEffect(() => {
     if (!isAndroidNativeRuntime()) return;
     void nativeAppUpdate.check().then((result) => { if (result.hasUpdate) setAvailableUpdate(result); }).catch(() => undefined);

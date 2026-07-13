@@ -16,6 +16,8 @@ describe('AnalysisComputationCache', () => {
     expect(first).toBe(points);
     expect(second).toBe(points);
     expect(third).toBe(points);
+    expect(cache.peek('ledger:1:ALL:v1')).toBe(points);
+    expect(cache.peek('ledger:missing:v1')).toBeUndefined();
   });
 
   it('recomputes when the data version or scope changes', async () => {

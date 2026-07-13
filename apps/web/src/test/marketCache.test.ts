@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '../db/localDb';
-import { marketCacheManager, marketTodayForHistoricalSync } from '../core/market/marketCacheManager';
+import { marketCacheManager } from '../core/market/marketCacheManager';
+import { latestExpectedDailyCloseDate } from '../core/market/marketDataCacheService';
 import { HistoricalBar } from '../db/schema';
 
 function createTestBar(
@@ -400,17 +401,18 @@ describe('MarketCacheManager', () => {
     expect(summary.items).toHaveLength(1);
     expect(summary.items[0].securityKey).toBe('US:AAPL');
     expect(summary.items[0].fromDate).toBe('2024-01-02');
-    expect(summary.items[0].toDate).toBe('2026-07-12');
+    expect(summary.items[0].toDate).toBe('2026-07-10');
 
     const items = await db.marketWorkItems.where('kind').equals('historical_range_fill').toArray();
     expect(items).toHaveLength(1);
     expect(items[0].status).toBe('pending');
     expect(items[0].requiredFromDate).toBe('2024-01-02');
-    expect(items[0].requiredToDate).toBe('2026-07-12');
+    expect(items[0].requiredToDate).toBe('2026-07-10');
   });
 
   it('does not queue an already provider-confirmed history range again on app open', async () => {
     await db.transactions.add({ ledgerId: 1, tradeType: 'BUY', platform: 'SCHWAB', market: 'US', symbol: 'AAPL', name: 'Apple Inc.', tradeDate: '2026-07-01', tradeTime: '10:00:00', price: 180, quantity: 1, commission: 0, tax: 0, note: '', createdAt: Date.now(), updatedAt: Date.now(), investorName: null, assetType: 'STOCK', underlyingSymbol: null, expiryDate: null, strikePrice: null, optionType: null, fxFromCurrency: null, fxFromAmount: null, fxToCurrency: null, fxToAmount: null, fxRate: null, sourceChannel: null, externalReference: null } as any);
+    await db.historicalBars.add({ id: 'US:AAPL:stock:1d:2026-07-02', securityKey: 'US:AAPL', symbol: 'AAPL', market: 'US', assetType: 'stock', resolution: '1d', tradeDate: '2026-07-02', close: 181, providerId: 'test', fetchedAt: Date.now(), dataQuality: 'normal' });
     await db.historicalCoverage.add({ securityKey: 'US:AAPL', resolution: '1d', fromDate: '2026-07-01', toDate: '2026-07-12', providerId: 'test', coverageStatus: 'complete', updatedAt: Date.now() });
 
     const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
@@ -427,9 +429,9 @@ describe('MarketCacheManager', () => {
 
     const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
 
-    expect(summary.items).toContainEqual({ securityKey: 'HK:7709', fromDate: '2026-06-01', toDate: '2026-07-12' });
-    const item = await db.marketWorkItems.get('hist_fill_HK_7709_2026-06-01_2026-07-12');
-    expect(item?.fetchToDate).toBe('2026-07-12');
+    expect(summary.items).toContainEqual({ securityKey: 'HK:7709', fromDate: '2026-06-01', toDate: '2026-07-10' });
+    const item = await db.marketWorkItems.get('hist_fill_HK_7709_2026-06-01_2026-07-10');
+    expect(item?.fetchToDate).toBe('2026-07-10');
   });
 
   it('ends a fully closed HK position at its liquidation date', async () => {
@@ -682,7 +684,7 @@ describe('MarketCacheManager', () => {
     expect(items).toHaveLength(1);
     expect(items[0].securityKey).toBe('US:AAPL');
     expect(items[0].requiredFromDate).toBe('2024-01-05');
-    expect(items[0].requiredToDate).toBe(marketTodayForHistoricalSync('US'));
+    expect(items[0].requiredToDate).toBe(latestExpectedDailyCloseDate('US'));
     expect(items[0].status).toBe('pending');
   });
 
@@ -786,7 +788,7 @@ describe('MarketCacheManager', () => {
     expect(items).toHaveLength(1);
     expect(items[0].securityKey).toBe('US:AAPL');
     expect(items[0].requiredFromDate).toBe('2024-01-02');
-    expect(items[0].requiredToDate).toBe(marketTodayForHistoricalSync('US'));
+    expect(items[0].requiredToDate).toBe(latestExpectedDailyCloseDate('US'));
   });
 
   it('should not queue a task when no quotable transactions exist for the security', async () => {

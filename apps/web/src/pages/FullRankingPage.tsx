@@ -1,258 +1,127 @@
-import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { ArrowUpDown, ChevronRight, TrendingDown, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
+import type { Transaction } from '../db/schema';
 import { useAppShell } from '../app/AppShell';
-import { PortfolioCalculator, ExchangeRates, convertToCny, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
-import { TrendingUp, TrendingDown, ArrowUpDown } from 'lucide-react';
+import { PortfolioCalculator, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
+import { formatSignedDisplayAmount } from '../core/portfolio/analysisUtils';
+import { analysisRuntimeCache, analysisRates, readAnalysisInput, type AnalysisScope } from '../core/portfolio/analysisRuntime';
+import { BrokerPlatform, CurrencyType, DisplayCurrency } from '../shared/models';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
+type RankingRange = 'ALL' | 'THIS_MONTH' | 'ONE_MONTH' | 'SIX_MONTHS' | 'THIS_YEAR' | 'CUSTOM';
 const calculator = new PortfolioCalculator();
-const defaultExchangeRates: ExchangeRates = {
-  usdToCny: 7.20,
-  hkdToCny: 0.92,
-};
+const rangeOptions: Array<[RankingRange, string]> = [
+  ['ALL', '全部'], ['THIS_MONTH', '本月'], ['ONE_MONTH', '近1月'],
+  ['SIX_MONTHS', '近6月'], ['THIS_YEAR', '今年'], ['CUSTOM', '自定义'],
+];
 const EMPTY_LIST: never[] = [];
+const toDateString = (date: Date) => date.toISOString().slice(0, 10);
+const todayString = () => toDateString(new Date());
+const previousDate = (value: string) => {
+  const date = new Date(`${value}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() - 1);
+  return toDateString(date);
+};
+
+function clamp(value: string, min: string, max: string) {
+  return value < min ? min : value > max ? max : value;
+}
+
+function resolveRange(range: RankingRange, firstDate: string, latestDate: string, customStart: string, customEnd: string) {
+  if (range === 'CUSTOM') {
+    const start = clamp(customStart || firstDate, firstDate, latestDate);
+    const end = clamp(customEnd || latestDate, firstDate, latestDate);
+    return start <= end ? { fromDate: start, toDate: end } : { fromDate: end, toDate: start };
+  }
+  if (range === 'ALL') return { fromDate: firstDate, toDate: latestDate };
+  const start = new Date(`${latestDate}T00:00:00Z`);
+  if (range === 'THIS_MONTH') start.setUTCDate(1);
+  if (range === 'ONE_MONTH') start.setUTCMonth(start.getUTCMonth() - 1);
+  if (range === 'SIX_MONTHS') start.setUTCMonth(start.getUTCMonth() - 6);
+  if (range === 'THIS_YEAR') start.setUTCMonth(0, 1);
+  return { fromDate: clamp(toDateString(start), firstDate, latestDate), toDate: latestDate };
+}
+
+function instrumentPnl(
+  key: string,
+  fromDate: string,
+  toDate: string,
+  transactions: Transaction[],
+  quotes: Awaited<ReturnType<typeof readAnalysisInput>>['quotes'],
+  bars: Awaited<ReturnType<typeof readAnalysisInput>>['bars'],
+) {
+  const [market, symbol] = key.split(':');
+  const positionTransactions = transactions.filter((transaction) => `${transaction.market}:${transaction.symbol}` === key);
+  if (!positionTransactions.length) return null;
+  const opening = calculator.calculate(positionTransactions.filter((transaction) => transaction.tradeDate < fromDate), [], analysisRates).positions[key];
+  const closing = calculator.calculate(positionTransactions.filter((transaction) => transaction.tradeDate <= toDate), [], analysisRates).positions[key];
+  if (!opening && !closing) return null;
+  const quote = quotes.find((item) => item.market === market && item.symbol === symbol);
+  const securityBars = bars.filter((bar) => bar.securityKey === key && bar.resolution === '1d').sort((left, right) => left.tradeDate.localeCompare(right.tradeDate));
+  const priceAt = (date: string, fallback: number, allowCurrent: boolean) => {
+    if (allowCurrent && date >= todayString() && quote?.currentPrice != null) return quote.currentPrice;
+    return securityBars.filter((bar) => bar.tradeDate <= date).at(-1)?.close ?? fallback;
+  };
+  const multiplier = PortfolioSecurityRules.optionMultiplier(closing?.assetType ?? opening?.assetType ?? 'STOCK', symbol);
+  const openingPrice = priceAt(previousDate(fromDate), opening?.averageCost ?? closing?.averageCost ?? 0, false);
+  const closingPrice = priceAt(toDate, closing?.averageCost ?? opening?.averageCost ?? 0, true);
+  const openingValue = (opening?.quantity ?? 0) * openingPrice * multiplier;
+  const closingValue = (closing?.quantity ?? 0) * closingPrice * multiplier;
+  const openingUnrealized = openingValue - (opening?.remainingCost ?? 0);
+  const closingUnrealized = closingValue - (closing?.remainingCost ?? 0);
+  const realized = (closing?.realizedProfit ?? 0) - (opening?.realizedProfit ?? 0);
+  return {
+    key,
+    market: market as keyof typeof BrokerPlatform | string,
+    symbol,
+    name: closing?.name || opening?.name || positionTransactions[0]?.name || symbol,
+    assetType: closing?.assetType || opening?.assetType || positionTransactions[0]?.assetType || 'STOCK',
+    underlyingSymbol: closing?.underlyingSymbol || opening?.underlyingSymbol || positionTransactions[0]?.underlyingSymbol,
+    profitCny: (closingUnrealized - openingUnrealized + realized) * (market === 'US' ? analysisRates.usdToCny : market === 'HK' ? analysisRates.hkdToCny : 1),
+  };
+}
 
 export default function FullRankingPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { activePlatform } = useAppShell();
-  const [range, setRange] = useState('ALL');
+  const [range, setRange] = useState<RankingRange>(() => {
+    const candidate = searchParams.get('range') as RankingRange | null;
+    return rangeOptions.some(([value]) => value === candidate) ? candidate! : 'THIS_MONTH';
+  });
+  const [customStart, setCustomStart] = useState(searchParams.get('customStart') || '');
+  const [customEnd, setCustomEnd] = useState(searchParams.get('customEnd') || '');
   const [showProfit, setShowProfit] = useState(true);
   const [sortAscending, setSortAscending] = useState(false);
-
-  // Reactive DB queries
-  const activeLedgerId = useLiveQuery(async () => {
-    const setting = await db.appSettings.get('default_ledger');
-    return typeof setting === 'number' ? setting : 1;
-  }) ?? 1;
-
-  const rawTxns = useLiveQuery(async () => {
-    const ledgerTransactions = activeLedgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(activeLedgerId).toArray();
-    return activePlatform === null ? ledgerTransactions : ledgerTransactions.filter((transaction) => transaction.platform === activePlatform);
-  }, [activeLedgerId, activePlatform]) ?? EMPTY_LIST;
-
-  const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY_LIST;
-
-  // Calculate and sort ranking list
+  const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) ?? 1;
+  const storedCurrency = useLiveQuery(async () => (await db.appSettings.get('display_currency'))?.value) ?? 'CNY';
+  const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
+  const scope = useMemo<AnalysisScope>(() => ({ ledgerId: typeof activeLedgerId === 'number' ? activeLedgerId : 1, platform: activePlatform }), [activeLedgerId, activePlatform]);
+  const cachedInput = analysisRuntimeCache.peek(scope);
+  const input = useLiveQuery(() => readAnalysisInput(scope), [scope.ledgerId, scope.platform], cachedInput?.request);
+  const transactions = input?.transactions ?? EMPTY_LIST;
+  const quotes = input?.quotes ?? EMPTY_LIST;
+  const bars = input?.bars ?? EMPTY_LIST;
+  useEffect(() => {
+    if (input) analysisRuntimeCache.remember(scope, input);
+  }, [input, scope]);
+  const firstDate = transactions.length ? [...transactions].sort((left, right) => left.tradeDate.localeCompare(right.tradeDate))[0].tradeDate : todayString();
+  const rangeBounds = resolveRange(range, firstDate, todayString(), customStart, customEnd);
   const rankingList = useMemo(() => {
-    if (rawTxns.length === 0) return [];
+    const keys = new Set(transactions.filter((transaction) => transaction.market !== 'CASH' && transaction.symbol !== 'CASH').map((transaction) => `${transaction.market}:${transaction.symbol}`));
+    const rows = [...keys].map((key) => instrumentPnl(key, rangeBounds.fromDate, rangeBounds.toDate, transactions, quotes, bars)).filter((row): row is NonNullable<ReturnType<typeof instrumentPnl>> => row !== null && row.market !== 'CASH');
+    const filtered = rows.filter((row) => showProfit ? row.profitCny > 0 : row.profitCny < 0);
+    return filtered.sort((left, right) => sortAscending ? left.profitCny - right.profitCny : right.profitCny - left.profitCny);
+  }, [bars, quotes, rangeBounds.fromDate, rangeBounds.toDate, showProfit, sortAscending, transactions]);
 
-    // Filter transactions by range
-    let filteredTxns = rawTxns;
-    const now = new Date();
-    let startDateStr = '';
-
-    if (range === 'THIS_MONTH') {
-      const start = new Date(now.getFullYear(), now.getMonth(), 1);
-      startDateStr = start.toISOString().split('T')[0];
-    } else if (range === 'ONE_MONTH') {
-      const start = new Date();
-      start.setMonth(start.getMonth() - 1);
-      startDateStr = start.toISOString().split('T')[0];
-    } else if (range === 'SIX_MONTHS') {
-      const start = new Date();
-      start.setMonth(start.getMonth() - 6);
-      startDateStr = start.toISOString().split('T')[0];
-    } else if (range === 'THIS_YEAR') {
-      const start = new Date(now.getFullYear(), 0, 1);
-      startDateStr = start.toISOString().split('T')[0];
-    }
-
-    if (startDateStr) {
-      filteredTxns = rawTxns.filter(t => t.tradeDate >= startDateStr);
-    }
-
-    // Run portfolio calculator on filtered transactions
-    const snap = calculator.calculate(filteredTxns, quotes, defaultExchangeRates);
-
-    // Group profits/losses in CNY by symbol
-    const rankings = Object.values(snap.positions).map(pos => {
-      const quote = quotes.find(q => q.symbol === pos.symbol && q.market === pos.market);
-      const currentPrice = quote?.currentPrice ?? pos.averageCost;
-      const mult = pos.assetType === 'OPTION' ? 100 : 1;
-      const currentValue = pos.quantity * currentPrice * mult;
-      
-      const unrealized = currentValue - pos.remainingCost;
-      const totalPnl = unrealized + pos.realizedProfit;
-      const totalPnlCny = convertToCny(totalPnl, pos.market, defaultExchangeRates);
-
-      return {
-        symbol: pos.symbol,
-        market: pos.market,
-        name: pos.name,
-        profit: totalPnlCny,
-        assetType: pos.assetType,
-        underlyingSymbol: pos.underlyingSymbol
-      };
-    }).filter(item => item.market !== 'CASH' && item.symbol !== 'CASH');
-
-    // Filter by Profit vs Loss
-    const filtered = rankings.filter(item => {
-      if (showProfit) return item.profit >= 0;
-      return item.profit < 0;
-    });
-
-    // Sort by profit
-    filtered.sort((a, b) => {
-      if (sortAscending) return a.profit - b.profit;
-      return b.profit - a.profit;
-    });
-
-    return filtered;
-  }, [rawTxns, quotes, range, showProfit, sortAscending]);
-
-  return (
-    <div className="page page-secondary secondary-detail-page">
-      {/* Header */}
-      <SecondaryPageHeader title="盈亏排行" fallback="/analysis" />
-
-      {/* Range Selector */}
-      <div className="flex-between gap-2" style={{ overflowX: 'auto', paddingBottom: '0.25rem' }}>
-        {['ALL', 'THIS_MONTH', 'ONE_MONTH', 'SIX_MONTHS', 'THIS_YEAR'].map((r) => (
-          <button 
-            key={r} 
-            onClick={() => setRange(r)}
-            style={{ 
-              padding: '0.4rem 0.8rem', 
-              fontSize: '0.8rem', 
-              borderRadius: '20px',
-              border: range === r ? '1px solid var(--accent)' : '1px solid var(--border-color)',
-              backgroundColor: range === r ? 'rgba(59, 130, 246, 0.15)' : 'var(--bg-input)',
-              color: range === r ? 'var(--accent)' : 'var(--text-primary)',
-              whiteSpace: 'nowrap',
-              cursor: 'pointer'
-            }}
-          >
-            {r === 'ALL' ? '全部' : r === 'THIS_MONTH' ? '本月' : r === 'ONE_MONTH' ? '近1月' : r === 'SIX_MONTHS' ? '近6月' : '本年'}
-          </button>
-        ))}
-      </div>
-
-      {/* Toggle Tabs (Profit vs Loss) */}
-      <div className="flex-between" style={{ gap: '0.5rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button 
-            onClick={() => { setShowProfit(true); setSortAscending(false); }}
-            style={{ 
-              padding: '0.4rem 0.9rem', 
-              fontSize: '0.8rem', 
-              borderRadius: '20px',
-              border: showProfit ? 'none' : '1px solid var(--border-color)',
-              backgroundColor: showProfit ? 'var(--color-success)' : 'var(--bg-input)',
-              color: showProfit ? '#ffffff' : 'var(--text-primary)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.25rem',
-              cursor: 'pointer'
-            }}
-          >
-            <TrendingUp size={14} />
-            盈利排行
-          </button>
-          <button 
-            onClick={() => { setShowProfit(false); setSortAscending(true); }}
-            style={{ 
-              padding: '0.4rem 0.9rem', 
-              fontSize: '0.8rem', 
-              borderRadius: '20px',
-              border: !showProfit ? 'none' : '1px solid var(--border-color)',
-              backgroundColor: !showProfit ? 'var(--color-error)' : 'var(--bg-input)',
-              color: !showProfit ? '#ffffff' : 'var(--text-primary)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.25rem',
-              cursor: 'pointer'
-            }}
-          >
-            <TrendingDown size={14} />
-            亏损排行
-          </button>
-        </div>
-
-        <button 
-          onClick={() => setSortAscending(!sortAscending)}
-          style={{ 
-            padding: '0.4rem 0.6rem', 
-            fontSize: '0.8rem', 
-            borderRadius: '20px',
-            border: '1px solid var(--border-color)',
-            backgroundColor: 'var(--bg-input)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.25rem',
-            color: 'var(--text-primary)',
-            cursor: 'pointer'
-          }}
-        >
-          <ArrowUpDown size={12} />
-          {sortAscending ? '升序' : '降序'}
-        </button>
-      </div>
-
-      {/* Rankings List */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', padding: '0.5rem' }}>
-        {rankingList.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-            没有符合条件的交易数据
-          </div>
-        ) : (
-          rankingList.map((item, idx) => {
-            const displayIdx = idx + 1;
-            return (
-              <div 
-                key={`${item.market}:${item.symbol}`} 
-                onClick={() => {
-                  const targetSymbol = PortfolioSecurityRules.attributionSymbol(
-                    item.symbol,
-                    item.assetType,
-                    item.underlyingSymbol
-                  );
-                  navigate(`/analysis/stock/${targetSymbol}/${item.market}`);
-                }}
-                style={{ 
-                  display: 'flex', 
-                  alignItems: 'center', 
-                  gap: '0.75rem', 
-                  padding: '0.75rem', 
-                  borderRadius: '8px',
-                  cursor: 'pointer',
-                  transition: 'background 0.2s',
-                }}
-                className="list-item-hover"
-              >
-                {/* Rank Number Badge */}
-                <div style={{ 
-                  width: '24px', 
-                  height: '24px', 
-                  borderRadius: '50%', 
-                  backgroundColor: displayIdx <= 3 ? (showProfit ? 'rgba(16, 185, 129, 0.15)' : 'rgba(239, 68, 68, 0.15)') : 'rgba(255,255,255,0.03)',
-                  color: displayIdx <= 3 ? (showProfit ? 'var(--color-success)' : 'var(--color-error)') : 'var(--text-muted)',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontWeight: 700,
-                  fontSize: '0.8rem'
-                }}>
-                  {displayIdx}
-                </div>
-
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 600, fontSize: '0.9rem' }}>{item.name}</div>
-                  <div className="text-xs text-muted">{item.symbol}.{item.market}</div>
-                </div>
-
-                <div style={{ 
-                  fontWeight: 700, 
-                  color: item.profit >= 0 ? 'var(--color-success)' : 'var(--color-error)' 
-                }}>
-                  {item.profit >= 0 ? '+' : ''}¥{item.profit.toFixed(2)}
-                </div>
-              </div>
-            );
-          })
-        )}
-      </div>
-    </div>
-  );
+  return <div className="page page-secondary secondary-detail-page full-ranking-page">
+    <SecondaryPageHeader title="盈亏排行" fallback="/analysis" />
+    <div className="analysis-segment full-ranking-range-selector">{rangeOptions.map(([value, label]) => <button type="button" key={value} className={range === value ? 'active' : ''} onClick={() => setRange(value)}>{label}</button>)}</div>
+    {range === 'CUSTOM' && <div className="analysis-custom-range"><input type="date" value={customStart || firstDate} min={firstDate} max={todayString()} onChange={(event) => setCustomStart(event.target.value)} /><span>至</span><input type="date" value={customEnd || todayString()} min={firstDate} max={todayString()} onChange={(event) => setCustomEnd(event.target.value)} /></div>}
+    <div className="full-ranking-filter-row"><div className="analysis-chip-row"><button type="button" className={showProfit ? 'active' : ''} onClick={() => { setShowProfit(true); setSortAscending(false); }}><TrendingUp size={14} />盈利排行</button><button type="button" className={!showProfit ? 'active' : ''} onClick={() => { setShowProfit(false); setSortAscending(true); }}><TrendingDown size={14} />亏损排行</button></div><button type="button" className="full-ranking-sort" onClick={() => setSortAscending((value) => !value)}><ArrowUpDown size={14} />{sortAscending ? '升序' : '降序'}</button></div>
+    <div className="full-ranking-list">{rankingList.length === 0 ? <div className="full-ranking-empty">{showProfit ? '当前区间内没有盈利的股票' : '当前区间内没有亏损的股票'}</div> : rankingList.map((item, index) => { const targetSymbol = PortfolioSecurityRules.attributionSymbol(item.symbol, item.assetType, item.underlyingSymbol); return <button type="button" className="full-ranking-row" key={item.key} onClick={() => navigate(`/analysis/stock/${targetSymbol}/${item.market}`)}><span className={`full-ranking-index ${index < 3 ? (showProfit ? 'positive' : 'negative') : ''}`}>{index + 1}</span><span className="full-ranking-copy"><strong>{item.name}</strong><small>{item.symbol} · {item.market}</small></span><b className={item.profitCny >= 0 ? 'profit' : 'loss'}>{formatSignedDisplayAmount(item.profitCny, displayCurrency.symbol, displayCurrency.cnyRate)}</b><ChevronRight size={20} /></button>; })}</div>
+  </div>;
 }

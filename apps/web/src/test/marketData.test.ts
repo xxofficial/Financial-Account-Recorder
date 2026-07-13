@@ -19,7 +19,6 @@ describe('Market Data Providers and Cache Service', () => {
     await Promise.all([
       db.marketProviderConfigs.clear(),
       db.quoteSnapshots.clear(),
-      db.historicalDailyBars.clear(),
       db.historicalBars.clear(),
       db.transactions.clear(),
       db.marketRequestLogs.clear(),
@@ -633,21 +632,6 @@ describe('Market Data Providers and Cache Service', () => {
 
     it('should fetch historical bars and correctly handle gap filling', async () => {
       // Put a single day's bar in DB: 2026-07-05
-      const barItem = {
-        id: 'US:AAPL:STOCK:2026-07-05',
-        symbol: 'AAPL',
-        market: 'US',
-        assetType: 'STOCK' as const,
-        date: '2026-07-05',
-        open: 180,
-        high: 181,
-        low: 179,
-        close: 180.5,
-        volume: 5000,
-        provider: 'local',
-        fetchedAt: Date.now(),
-      };
-      await db.historicalDailyBars.put(barItem);
       await db.historicalBars.put({
         id: 'US:AAPL:stock:1d:2026-07-05',
         securityKey: 'US:AAPL',
@@ -737,8 +721,7 @@ describe('Market Data Providers and Cache Service', () => {
       expect(bars[4].date).toBe('2026-07-07');
       expect(bars[4].close).toBe(182.5);
 
-      const allDbBars = await db.historicalDailyBars.toArray();
-      // Ensure compatibility tests pass
+      const allDbBars = await db.historicalBars.toArray();
       expect(allDbBars).toBeDefined();
     });
 

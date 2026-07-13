@@ -50,6 +50,28 @@ interface LegendData {
   ma: Record<number, number | null>;
 }
 
+interface ChartThemeColors {
+  primary: string;
+  muted: string;
+  border: string;
+  grid: string;
+}
+
+function readChartThemeColors(themeVersion = 0): ChartThemeColors {
+  void themeVersion;
+  if (typeof document === 'undefined') {
+    return { primary: '#1d1b20', muted: '#77727c', border: '#e1e1e5', grid: '#f1f1f3' };
+  }
+  const styles = getComputedStyle(document.documentElement);
+  const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback;
+  return {
+    primary: read('--text-primary', '#1d1b20'),
+    muted: read('--text-muted', '#77727c'),
+    border: read('--border-color', '#e1e1e5'),
+    grid: read('--bg-card', '#f1f1f3'),
+  };
+}
+
 function isCandlestickData(value: { time: Time }): value is CandlestickData {
   return 'open' in value && 'high' in value && 'low' in value && 'close' in value;
 }
@@ -79,6 +101,23 @@ export default function StockChart({
   const prevTimeRangeRef = useRef<ChartRange>(timeRange);
 
   const [legend, setLegend] = useState<LegendData | null>(null);
+  const [themeVersion, setThemeVersion] = useState(0);
+  const chartTheme = useMemo(() => readChartThemeColors(themeVersion), [themeVersion]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const root = document.documentElement;
+    if (typeof MutationObserver === 'undefined') return;
+    const observer = new MutationObserver(() => setThemeVersion((version) => version + 1));
+    observer.observe(root, { attributes: true, attributeFilter: ['data-theme'] });
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onMediaChange = () => setThemeVersion((version) => version + 1);
+    media.addEventListener?.('change', onMediaChange);
+    return () => {
+      observer.disconnect();
+      media.removeEventListener?.('change', onMediaChange);
+    };
+  }, []);
 
   const chartData = useMemo(() => {
     const filtered = filterBarsByRange(bars, timeRange);
@@ -128,21 +167,21 @@ export default function StockChart({
     const chart = createChart(containerRef.current, {
       layout: {
         background: { color: 'transparent' },
-        textColor: '#9ca3af',
+        textColor: chartTheme.muted,
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: 'rgba(255,255,255,0.05)' },
-        horzLines: { color: 'rgba(255,255,255,0.05)' },
+        vertLines: { color: chartTheme.grid },
+        horzLines: { color: chartTheme.grid },
       },
       crosshair: {
         mode: CrosshairMode.Normal,
       },
       rightPriceScale: {
-        borderColor: 'rgba(255,255,255,0.08)',
+        borderColor: chartTheme.border,
       },
       timeScale: {
-        borderColor: 'rgba(255,255,255,0.08)',
+        borderColor: chartTheme.border,
         timeVisible: false,
       },
       autoSize: true,
@@ -225,7 +264,7 @@ export default function StockChart({
       markersPrimitiveRef.current = null;
       mountedMaSeries.clear();
     };
-  }, [colorScheme]);
+  }, [chartTheme, colorScheme]);
 
   // Update data
   useEffect(() => {
@@ -301,8 +340,8 @@ export default function StockChart({
             justifyContent: 'center',
             gap: '0.2rem',
             fontSize: '0.7rem',
-            color: '#e2e8f0',
-            borderBottom: '1px solid rgba(255,255,255,0.06)',
+            color: chartTheme.primary,
+            borderBottom: `1px solid ${chartTheme.border}`,
           }}
         >
           <div

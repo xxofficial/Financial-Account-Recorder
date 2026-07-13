@@ -1,10 +1,12 @@
-import { useState, useMemo } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Calendar, FileText, Info, RefreshCw, TrendingUp } from 'lucide-react';
+import { useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { Calendar, FileText, Info, RefreshCw, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
-import { PortfolioCalculator, ExchangeRates, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
-import { TradeTypeLabels } from '../shared/models';
+import { useAppShell } from '../app/AppShell';
+import { PortfolioCalculator, ExchangeRates, PortfolioSecurityRules, convertToCny } from '../core/portfolio/portfolioCalculator';
+import { DisplayCurrency, TradeTypeLabels } from '../shared/models';
+import { type Transaction } from '../db/schema';
 import StockChart from '../components/StockChart';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 import { marketCacheManager } from '../core/market/marketCacheManager';
@@ -12,487 +14,203 @@ import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import { historicalBarsToChartBars, type ChartRange, type CandlestickColorScheme } from '../core/chart/chartDataUtils';
 
 const calculator = new PortfolioCalculator();
-const defaultExchangeRates: ExchangeRates = {
-  usdToCny: 7.20,
-  hkdToCny: 0.92,
-};
+const defaultExchangeRates: ExchangeRates = { usdToCny: 7.20, hkdToCny: 0.92 };
 const EMPTY_LIST: never[] = [];
+const rangeOptions = [
+  ['ALL', '全部'], ['THIS_MONTH', '本月'], ['ONE_MONTH', '近1月'],
+  ['SIX_MONTHS', '近6月'], ['THIS_YEAR', '本年'], ['CUSTOM', '自定义'],
+] as const;
+
+function toDateString(date: Date) { return date.toISOString().slice(0, 10); }
+function clampDate(value: string, min: string, max: string) { return value < min ? min : value > max ? max : value; }
+
+function signed(value: number, currency: { symbol: string }) {
+  return `${value >= 0 ? '+' : '-'}${currency.symbol}${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function nativeCurrency(market: string) {
+  if (market === 'US') return DisplayCurrency.USD;
+  if (market === 'HK') return DisplayCurrency.HKD;
+  return DisplayCurrency.CNY;
+}
+
+function amount(value: number, currency: { symbol: string; cnyRate: number }) {
+  return `${currency.symbol}${(value / currency.cnyRate).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function nativeAmount(value: number, currency: { symbol: string }) {
+  return `${currency.symbol}${value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function txAmount(tx: Transaction, currency: { cnyRate: number }) {
+  const multiplier = PortfolioSecurityRules.optionMultiplier(tx.assetType, tx.symbol);
+  return convertToCny(Math.abs(tx.price * tx.quantity * multiplier), tx.market, defaultExchangeRates) / currency.cnyRate;
+}
 
 export default function StockDetailPage() {
   const { symbol, market } = useParams();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-
   const targetSymbol = symbol || '';
   const targetMarket = market || 'US';
-
   const [range, setRange] = useState(searchParams.get('range') || 'ALL');
+  const [customStart, setCustomStart] = useState(searchParams.get('customStart') || '');
+  const [customEnd, setCustomEnd] = useState(searchParams.get('customEnd') || '');
   const [activeTab, setActiveTab] = useState<'STOCK' | 'OPTION'>('STOCK');
   const [isFetching, setIsFetching] = useState(false);
+  const { activePlatform } = useAppShell();
 
-  // Reactive DB query
-  const activeLedgerId = useLiveQuery(async () => {
-    const setting = await db.appSettings.get('default_ledger');
-    return typeof setting === 'number' ? setting : 1;
-  }) ?? 1;
-
-  const rawTxns = useLiveQuery(() => 
-    db.transactions.where('ledgerId').equals(activeLedgerId).toArray(),
-    [activeLedgerId]
-  ) ?? EMPTY_LIST;
-
+  // Keep the detail page's ledger scope identical to the analysis home page.
+  // `default_ledger` is an AppSetting record, not the numeric ledger id itself;
+  // `0` is the aggregate scope and must include transactions from every ledger.
+  const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) ?? 1;
+  const rawTxns = useLiveQuery(async () => (
+    activeLedgerId === 0
+      ? db.transactions.toArray()
+      : db.transactions.where('ledgerId').equals(activeLedgerId as number).toArray()
+  ), [activeLedgerId]) ?? EMPTY_LIST;
   const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY_LIST;
-
-  const historicalBars = useLiveQuery(() =>
-    db.historicalBars.where('securityKey').equals(`${targetMarket}:${targetSymbol}`).toArray(),
-    [targetMarket, targetSymbol]
-  ) ?? EMPTY_LIST;
-
-  const coverage = useLiveQuery(() =>
-    db.historicalCoverage.where('securityKey').equals(`${targetMarket}:${targetSymbol}`).toArray(),
-    [targetMarket, targetSymbol]
-  ) ?? EMPTY_LIST;
-
+  const historicalBars = useLiveQuery(() => db.historicalBars.where('securityKey').equals(`${targetMarket}:${targetSymbol}`).toArray(), [targetMarket, targetSymbol]) ?? EMPTY_LIST;
+  const coverage = useLiveQuery(() => db.historicalCoverage.where('securityKey').equals(`${targetMarket}:${targetSymbol}`).toArray(), [targetMarket, targetSymbol]) ?? EMPTY_LIST;
   const colorScheme = useLiveQuery(async () => {
     const setting = await db.appSettings.get('candlestick_color_scheme');
     return (setting?.value === 'green_up' ? 'green_up' : 'red_up') as CandlestickColorScheme;
   }) ?? 'red_up';
+  const displayCurrency = nativeCurrency(targetMarket);
+
+  const securityTxns = useMemo(() => rawTxns.filter((tx) => {
+    const attrSymbol = PortfolioSecurityRules.attributionSymbol(tx.symbol, tx.assetType, tx.underlyingSymbol);
+    return tx.market === targetMarket && attrSymbol.toUpperCase() === targetSymbol.toUpperCase() &&
+      (activePlatform === null || tx.platform === activePlatform);
+  }), [activePlatform, rawTxns, targetMarket, targetSymbol]);
+
+  const securityDateBounds = useMemo(() => {
+    const dates = securityTxns.map((tx) => tx.tradeDate).sort();
+    const today = toDateString(new Date());
+    return { min: dates[0] ?? today, max: dates[dates.length - 1] ?? today };
+  }, [securityTxns]);
 
   const rangeBounds = useMemo(() => {
-    const today = new Date();
-    const endDate = today.toISOString().slice(0, 10);
-    const start = new Date(today);
+    const today = toDateString(new Date());
+    const firstTrade = securityDateBounds.min;
+    if (range === 'CUSTOM') {
+      const fromDate = clampDate(customStart || firstTrade, securityDateBounds.min, securityDateBounds.max);
+      const toDate = clampDate(customEnd || securityDateBounds.max, securityDateBounds.min, securityDateBounds.max);
+      return { fromDate: fromDate <= toDate ? fromDate : toDate, toDate: fromDate <= toDate ? toDate : fromDate };
+    }
+    const start = new Date();
     if (range === 'THIS_MONTH') start.setDate(1);
     else if (range === 'ONE_MONTH') start.setMonth(start.getMonth() - 1);
     else if (range === 'SIX_MONTHS') start.setMonth(start.getMonth() - 6);
     else if (range === 'THIS_YEAR') start.setMonth(0, 1);
-    else {
-      const firstTrade = rawTxns.filter((t) => t.market === targetMarket && PortfolioSecurityRules.attributionSymbol(t.symbol, t.assetType, t.underlyingSymbol).toUpperCase() === targetSymbol.toUpperCase()).map((t) => t.tradeDate).sort()[0];
-      return { fromDate: firstTrade ?? endDate, toDate: endDate };
-    }
-    return { fromDate: start.toISOString().slice(0, 10), toDate: endDate };
-  }, [range, rawTxns, targetMarket, targetSymbol]);
+    else return { fromDate: firstTrade, toDate: today };
+    return { fromDate: toDateString(start), toDate: today };
+  }, [customEnd, customStart, range, securityDateBounds]);
 
-  // Group and calculate statistics
   const stats = useMemo(() => {
-    // 1. Filter all transactions belonging to this security (including its options)
-    const securityTxns = rawTxns.filter(t => {
-      const attrSymbol = PortfolioSecurityRules.attributionSymbol(t.symbol, t.assetType, t.underlyingSymbol);
-      return attrSymbol.toUpperCase() === targetSymbol.toUpperCase() && t.market === targetMarket;
-    });
-
-    // 2. Separate into stock-only and option-only transactions
-    const stockTxns = securityTxns.filter(t => t.assetType !== 'OPTION');
-    const optionTxns = securityTxns.filter(t => t.assetType === 'OPTION');
-
-    // 3. Run calculator to get position values
-    const stockSnap = calculator.calculate(stockTxns, quotes, defaultExchangeRates);
-    const optionSnap = calculator.calculate(optionTxns, quotes, defaultExchangeRates);
-
-    // 4. Calculate PNLs (Realized + Unrealized)
-    const stockPnl = stockSnap.unrealizedProfitCny + Object.values(stockSnap.positions).reduce((sum, p) => sum + p.realizedProfit, 0);
-    const optionPnl = optionSnap.unrealizedProfitCny + Object.values(optionSnap.positions).reduce((sum, p) => sum + p.realizedProfit, 0);
-    const totalPnl = stockPnl + optionPnl;
-
-    // 5. Select active transactions for breakdown calculation
-    const currentTabTxns = activeTab === 'OPTION' ? optionTxns : stockTxns;
-    const currentSnap = activeTab === 'OPTION' ? optionSnap : stockSnap;
-
-    // Calculate breakdown stats for the selected tab
-    let tabBuyCost = 0;
-    let tabSellProceeds = 0;
-    let tabFees = 0;
-
-    currentTabTxns.forEach(t => {
-      const mult = PortfolioSecurityRules.optionMultiplier(t.assetType, t.symbol);
-      const subtotal = t.price * t.quantity * mult;
-      
-      if (t.tradeType === 'BUY') {
-        tabBuyCost += subtotal;
-        tabFees += (t.commission + t.tax);
-      } else if (t.tradeType === 'SELL') {
-        tabSellProceeds += subtotal;
-        tabFees += (t.commission + t.tax);
-      } else if (t.tradeType === 'DIVIDEND') {
-        tabSellProceeds += subtotal;
-        tabFees += t.tax;
-      } else if (t.tradeType === 'TAX') {
-        tabFees += (t.price * t.quantity);
-      } else {
-        tabFees += (t.commission + t.tax);
-      }
-    });
-
-    // Calculate current holdings for the selected tab
-    let totalQuantity = 0;
-    let closingValue = 0;
-    let avgCost = 0;
-
-    if (activeTab === 'STOCK') {
-      const posKey = `${targetMarket}:${targetSymbol}`;
-      const position = currentSnap.positions[posKey];
-      totalQuantity = position ? position.quantity : 0;
-      avgCost = position ? position.averageCost : 0;
-      
-      const quote = quotes.find(q => q.symbol === targetSymbol && q.market === targetMarket);
-      const currentPrice = quote?.currentPrice ?? avgCost;
-      closingValue = totalQuantity * currentPrice;
-    } else {
-      // Sum up all option positions for this underlying
-      Object.values(currentSnap.positions).forEach(pos => {
-        totalQuantity += pos.quantity;
-        const quote = quotes.find(q => q.symbol === pos.symbol && q.market === pos.market);
-        const currentPrice = quote?.currentPrice ?? pos.averageCost;
-        closingValue += pos.quantity * currentPrice * 100;
-      });
-    }
-
-    // 6. Filter transaction list by date range
-    let filteredTxnsList = currentTabTxns;
-    const now = new Date();
-    let startDateStr = '';
-
-    if (range === 'THIS_MONTH') {
-      const start = new Date(now.getFullYear(), now.getMonth(), 1);
-      startDateStr = start.toISOString().split('T')[0];
-    } else if (range === 'ONE_MONTH') {
-      const start = new Date();
-      start.setMonth(start.getMonth() - 1);
-      startDateStr = start.toISOString().split('T')[0];
-    } else if (range === 'SIX_MONTHS') {
-      const start = new Date();
-      start.setMonth(start.getMonth() - 6);
-      startDateStr = start.toISOString().split('T')[0];
-    } else if (range === 'THIS_YEAR') {
-      const start = new Date(now.getFullYear(), 0, 1);
-      startDateStr = start.toISOString().split('T')[0];
-    }
-
-    if (startDateStr) {
-      filteredTxnsList = currentTabTxns.filter(t => t.tradeDate >= startDateStr);
-    }
-
-    // Sort transactions by date and time descending
-    filteredTxnsList.sort((a, b) => b.tradeDate.localeCompare(a.tradeDate) || b.tradeTime.localeCompare(a.tradeTime));
-
-    const quoteForTitle = quotes.find(q => q.symbol === targetSymbol && q.market === targetMarket);
-
-    return {
-      securityName: quoteForTitle?.name || (securityTxns[0]?.name) || targetSymbol,
-      stockPnl,
-      optionPnl,
-      totalPnl,
-      tabBuyCost,
-      tabSellProceeds,
-      tabFees,
-      closingValue,
-      totalQuantity,
-      avgCost,
-      currentPrice: quoteForTitle?.currentPrice ?? avgCost,
-      txnsList: filteredTxnsList
+    const inRange = securityTxns.filter((tx) => tx.tradeDate >= rangeBounds.fromDate && tx.tradeDate <= rangeBounds.toDate);
+    const stockTxns = securityTxns.filter((tx) => tx.assetType !== 'OPTION');
+    const optionTxns = securityTxns.filter((tx) => tx.assetType === 'OPTION');
+    const stockRange = inRange.filter((tx) => tx.assetType !== 'OPTION');
+    const optionRange = inRange.filter((tx) => tx.assetType === 'OPTION');
+    const stockBefore = calculator.calculate(stockTxns.filter((tx) => tx.tradeDate < rangeBounds.fromDate), [], defaultExchangeRates).positions[`${targetMarket}:${targetSymbol}`];
+    const stockAfter = calculator.calculate(stockTxns.filter((tx) => tx.tradeDate <= rangeBounds.toDate), [], defaultExchangeRates).positions[`${targetMarket}:${targetSymbol}`];
+    const bars = historicalBars.filter((bar) => bar.resolution === '1d' && bar.securityKey === `${targetMarket}:${targetSymbol}`).sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
+    const quote = quotes.find((item) => item.symbol === targetSymbol && item.market === targetMarket);
+    const lastTradePrice = (rows: typeof stockTxns, before: string, fallback: number) => rows.filter((tx) => tx.tradeDate <= before && (tx.tradeType === 'BUY' || tx.tradeType === 'SELL')).sort((a, b) => b.tradeDate.localeCompare(a.tradeDate))[0]?.price ?? fallback;
+    const priceAt = (date: string, isEnd: boolean, fallback: number) => {
+      if (isEnd && date >= toDateString(new Date()) && quote?.currentPrice != null) return quote.currentPrice;
+      return bars.filter((bar) => bar.tradeDate <= date).at(-1)?.close ?? lastTradePrice(stockTxns, date, fallback);
     };
-  }, [rawTxns, quotes, targetSymbol, targetMarket, range, activeTab]);
+    const startPrice = priceAt(rangeBounds.fromDate, false, stockBefore?.averageCost ?? 0);
+    const endPrice = priceAt(rangeBounds.toDate, true, stockAfter?.averageCost ?? startPrice);
+    const stockOpeningValue = (stockBefore?.quantity ?? 0) * startPrice;
+    const stockClosingValue = (stockAfter?.quantity ?? 0) * endPrice;
+    const stockBuy = stockRange.filter((tx) => tx.tradeType === 'BUY').reduce((sum, tx) => sum + tx.price * tx.quantity, 0);
+    const stockSell = stockRange.filter((tx) => tx.tradeType === 'SELL').reduce((sum, tx) => sum + tx.price * tx.quantity, 0);
+    const stockFees = stockRange.reduce((sum, tx) => sum + Math.abs(tx.commission + tx.tax), 0);
+    const stockPnl = stockClosingValue - stockOpeningValue + stockSell - stockBuy - stockFees;
+    let optionOpeningValue = 0;
+    let optionClosingValue = 0;
+    let optionBuy = 0;
+    let optionSell = 0;
+    let optionFees = 0;
+    optionTxns.forEach((tx) => {
+      const history = optionTxns.filter((row) => row.symbol === tx.symbol);
+      if (history[0]?.id !== tx.id) return;
+      const before = calculator.calculate(history.filter((row) => row.tradeDate < rangeBounds.fromDate), [], defaultExchangeRates).positions[`${targetMarket}:${tx.symbol}`];
+      const after = calculator.calculate(history.filter((row) => row.tradeDate <= rangeBounds.toDate), [], defaultExchangeRates).positions[`${targetMarket}:${tx.symbol}`];
+      const optionBars = historicalBars.filter((bar) => bar.resolution === '1d' && bar.securityKey === `${targetMarket}:${tx.symbol}`).sort((a, b) => a.tradeDate.localeCompare(b.tradeDate));
+      const optionQuote = quotes.find((item) => item.symbol === tx.symbol && item.market === targetMarket);
+      const fallback = after?.averageCost ?? before?.averageCost ?? 0;
+      const endOptionPrice = rangeBounds.toDate >= toDateString(new Date()) && optionQuote?.currentPrice != null ? optionQuote.currentPrice : optionBars.filter((bar) => bar.tradeDate <= rangeBounds.toDate).at(-1)?.close ?? fallback;
+      const startOptionPrice = optionBars.filter((bar) => bar.tradeDate < rangeBounds.fromDate).at(-1)?.close ?? before?.averageCost ?? endOptionPrice;
+      optionOpeningValue += (before?.quantity ?? 0) * startOptionPrice * 100;
+      optionClosingValue += (after?.quantity ?? 0) * endOptionPrice * 100;
+      const rows = optionRange.filter((row) => row.symbol === tx.symbol);
+      optionBuy += rows.filter((row) => row.tradeType === 'BUY').reduce((sum, row) => sum + row.price * row.quantity * 100, 0);
+      optionSell += rows.filter((row) => row.tradeType === 'SELL').reduce((sum, row) => sum + row.price * row.quantity * 100, 0);
+      optionFees += rows.reduce((sum, row) => sum + Math.abs(row.commission + row.tax), 0);
+    });
+    const optionPnl = optionClosingValue - optionOpeningValue + optionSell - optionBuy - optionFees;
+    const currentTxns = activeTab === 'OPTION' ? optionRange : stockRange;
+    const closingValue = activeTab === 'OPTION' ? optionClosingValue : stockClosingValue;
+    const buyCost = activeTab === 'OPTION' ? optionBuy : stockBuy;
+    const sellProceeds = activeTab === 'OPTION' ? optionSell : stockSell;
+    const fees = activeTab === 'OPTION' ? optionFees : stockFees;
+    const sorted = [...currentTxns].sort((a, b) => `${b.tradeDate} ${b.tradeTime}`.localeCompare(`${a.tradeDate} ${a.tradeTime}`));
+    const titleQuote = quotes.find((quote) => quote.symbol === targetSymbol && quote.market === targetMarket);
+    return {
+      securityName: titleQuote?.name || securityTxns[0]?.name || targetSymbol,
+      stockPnl, optionPnl, totalPnl: stockPnl + optionPnl,
+      buyCost, sellProceeds, fees, closingValue, stockOpeningValue, optionOpeningValue,
+      totalQuantity: activeTab === 'OPTION' ? optionRange.reduce((sum, tx) => sum + (tx.tradeType === 'BUY' ? tx.quantity : tx.tradeType === 'SELL' ? -tx.quantity : 0), 0) : (stockAfter?.quantity ?? 0),
+      currentPrice: titleQuote?.currentPrice ?? endPrice, txnsList: sorted, hasOptions: optionTxns.length > 0,
+    };
+  }, [activeTab, historicalBars, quotes, rangeBounds.fromDate, rangeBounds.toDate, securityTxns, targetMarket, targetSymbol]);
 
-  // Prepare chart data from cached bars and stock transactions
   const { chartBars, stockTrades, hasChartData } = useMemo(() => {
-    if (activeTab !== 'STOCK') {
-      return {
-        chartBars: [],
-        stockTrades: [],
-        hasChartData: false,
-      };
-    }
-
-    const allBars = historicalBars.filter((b) => b.resolution === '1d');
-    const chartBars = historicalBarsToChartBars(allBars);
-
-    const stockTrades = rawTxns.filter((t) => {
-      const attrSymbol = PortfolioSecurityRules.attributionSymbol(
-        t.symbol,
-        t.assetType,
-        t.underlyingSymbol
-      );
-      return (
-        t.assetType !== 'OPTION' &&
-        attrSymbol.toUpperCase() === targetSymbol.toUpperCase() &&
-        t.market === targetMarket
-      );
-    });
-
-    return {
-      chartBars,
-      stockTrades,
-      hasChartData: chartBars.length > 0,
-    };
-  }, [historicalBars, activeTab, rawTxns, targetSymbol, targetMarket]);
+    const bars = historicalBars.filter((bar) => bar.resolution === '1d');
+    const filteredBars = bars.filter((bar) => bar.tradeDate >= rangeBounds.fromDate && bar.tradeDate <= rangeBounds.toDate);
+    const stockTrades = securityTxns.filter((tx) => tx.assetType !== 'OPTION' && tx.tradeDate >= rangeBounds.fromDate && tx.tradeDate <= rangeBounds.toDate);
+    return { chartBars: historicalBarsToChartBars(filteredBars), stockTrades, hasChartData: filteredBars.length > 0 };
+  }, [historicalBars, rangeBounds.fromDate, rangeBounds.toDate, securityTxns]);
 
   const handleFetchMarketData = async () => {
     setIsFetching(true);
     try {
       await marketCacheManager.queueHistoricalRangeForSecurity(targetSymbol, targetMarket, 'stock', rangeBounds);
       await MarketTaskExecutor.startOrWakeMarketExecutor();
-    } catch (err: any) {
-      alert(`获取行情失败: ${err.message || err}`);
-    } finally {
-      setIsFetching(false);
-    }
+    } catch (error: any) {
+      alert(`获取行情失败: ${error?.message || error}`);
+    } finally { setIsFetching(false); }
   };
-
-  const getCurrencySymbol = (market: string) => {
-    switch (market) {
-      case 'US': return '$';
-      case 'HK': return 'HK$';
-      case 'A_SHARE': return '¥';
-      default: return '¥';
-    }
-  };
-
-  const isProfit = stats.totalPnl >= 0;
-  const currency = getCurrencySymbol(targetMarket);
 
   const rangeCoverage = coverage.find((item) => item.resolution === '1d' && item.fromDate <= rangeBounds.fromDate && item.toDate >= rangeBounds.toDate);
   const needsKlineFill = activeTab === 'STOCK' && (!rangeCoverage || rangeCoverage.coverageStatus !== 'complete' || !hasChartData);
+  const hasAnyKline = historicalBars.some((bar) => bar.resolution === '1d');
+  const isProfit = stats.totalPnl >= 0;
+  const selectedPnl = activeTab === 'STOCK' ? stats.stockPnl : stats.optionPnl;
 
-  return (
-    <div className="page page-secondary">
-      {/* Header */}
-      <SecondaryPageHeader title={<span className="secondary-page-title-stack"><span>{stats.securityName} ({targetSymbol}.{targetMarket})</span><small>包含正股及全部关联期权交易</small></span>} fallback="/analysis" />
-
-      {/* Range Segment Selector */}
-      <div className="range-selector">
-        {['ALL', 'THIS_MONTH', 'ONE_MONTH', 'SIX_MONTHS', 'THIS_YEAR'].map((r) => (
-          <button 
-            key={r} 
-            onClick={() => setRange(r)}
-            className={range === r ? 'active' : ''}
-          >
-            {r === 'ALL' ? '全部' : r === 'THIS_MONTH' ? '本月' : r === 'ONE_MONTH' ? '近1月' : r === 'SIX_MONTHS' ? '近6月' : '本年'}
-          </button>
-        ))}
-      </div>
-
-      {/* Daily Candlestick Chart */}
-      {activeTab === 'STOCK' && (
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <TrendingUp size={16} className="text-muted" />
-            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>日K线走势</span>
-          </div>
-
-          {hasChartData ? (
-            <StockChart
-              bars={chartBars}
-              trades={stockTrades}
-              timeRange={range as ChartRange}
-              colorScheme={colorScheme}
-              height={320}
-            />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', padding: '1rem 0', textAlign: 'center' }}>
-              <div className="text-sm text-muted">
-                暂无该证券的日K线缓存，无法绘制走势图。
-                <br />
-                请确保已配置行情API，然后点击获取。
-              </div>
-              <button
-                className="primary"
-                onClick={handleFetchMarketData}
-                disabled={isFetching}
-                style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: '0.35rem', margin: '0 auto', width: 'auto' }}
-              >
-                {isFetching ? <RefreshCw size={16} className="spin" /> : <RefreshCw size={16} />}
-                获取行情（API）
-              </button>
-            </div>
-          )}
-          {needsKlineFill && hasChartData && (
-            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', paddingTop: '8px', borderTop: '1px solid var(--border-color)' }}>
-              <span className="text-xs text-muted" style={{ flex: 1 }}>当前时间范围内日 K 线不完整，可按需补齐。</span>
-              <button className="primary" onClick={handleFetchMarketData} disabled={isFetching} style={{ minHeight: 34, fontSize: 12 }}>{isFetching ? <RefreshCw size={14} className="spin" /> : null}补齐日K线</button>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* PnL Card */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', borderLeft: `4px solid ${isProfit ? 'var(--market-up)' : 'var(--market-down)'}` }}>
-        <div className="text-xs text-muted">区间累计估算总盈亏 ({targetMarket === 'US' ? 'USD' : 'CNY'})</div>
-        <div style={{ 
-          fontSize: '2rem', 
-          fontWeight: 700, 
-          color: isProfit ? 'var(--market-up)' : 'var(--market-down)'
-        }}>
-          {isProfit ? '+' : ''}{stats.totalPnl.toFixed(2)}
-        </div>
-
-        <div className="grid-cols-2" style={{ borderTop: '1px solid var(--border-color)', paddingTop: '0.75rem', marginTop: '0.25rem' }}>
-          <div>
-            <div className="text-xs text-muted">正股盈亏</div>
-            <div style={{ fontWeight: 600, color: stats.stockPnl >= 0 ? 'var(--market-up)' : 'var(--market-down)' }}>
-              {stats.stockPnl >= 0 ? '+' : ''}{stats.stockPnl.toFixed(2)}
-            </div>
-          </div>
-          <div style={{ textAlign: 'right' }}>
-            <div className="text-xs text-muted">期权盈亏</div>
-            <div style={{ fontWeight: 600, color: stats.optionPnl >= 0 ? 'var(--market-up)' : 'var(--market-down)' }}>
-              {stats.optionPnl >= 0 ? '+' : ''}{stats.optionPnl.toFixed(2)}
-            </div>
-          </div>
-        </div>
-      </div>
-
-      {/* Tab Switcher if options exist */}
-      <div style={{ display: 'flex', borderBottom: '1px solid var(--border-color)' }}>
-        <button 
-          onClick={() => setActiveTab('STOCK')}
-          style={{ 
-            flex: 1, 
-            background: 'none', 
-            border: 'none', 
-            borderRadius: 0,
-            borderBottom: activeTab === 'STOCK' ? '2px solid var(--accent)' : 'none',
-            color: activeTab === 'STOCK' ? 'var(--text-primary)' : 'var(--text-muted)',
-            padding: '0.75rem 0',
-            cursor: 'pointer'
-          }}
-        >
-          正股详情
-        </button>
-        <button 
-          onClick={() => setActiveTab('OPTION')}
-          style={{ 
-            flex: 1, 
-            background: 'none', 
-            border: 'none', 
-            borderRadius: 0,
-            borderBottom: activeTab === 'OPTION' ? '2px solid var(--accent)' : 'none',
-            color: activeTab === 'OPTION' ? 'var(--text-primary)' : 'var(--text-muted)',
-            padding: '0.75rem 0',
-            cursor: 'pointer'
-          }}
-        >
-          衍生品(期权)明细
-        </button>
-      </div>
-
-      {/* Profit & Loss Breakdown */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Info size={16} className="text-muted" />
-          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-            {activeTab === 'STOCK' ? '正股盈亏构成' : '期权盈亏构成'}
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem', fontSize: '0.85rem' }}>
-          {activeTab === 'STOCK' ? (
-            <>
-              <div className="flex-between">
-                <span className="text-muted">持股数量:</span>
-                <span>{stats.totalQuantity} 股</span>
-              </div>
-              <div className="flex-between">
-                <span className="text-muted">持仓均价:</span>
-                <span>{currency}{stats.avgCost.toFixed(2)}</span>
-              </div>
-              <div className="flex-between">
-                <span className="text-muted">当前股价:</span>
-                <span>{currency}{stats.currentPrice.toFixed(2)}</span>
-              </div>
-            </>
-          ) : (
-            <div className="flex-between">
-              <span className="text-muted">持有未平仓合约数:</span>
-              <span>{stats.totalQuantity} 张</span>
-            </div>
-          )}
-          <div className="flex-between">
-            <span className="text-muted">{activeTab === 'STOCK' ? '期末正股持仓市值:' : '期末期权持仓市值:'}</span>
-            <span>{currency}{stats.closingValue.toFixed(2)}</span>
-          </div>
-          <div style={{ borderTop: '1px dashed var(--border-color)', margin: '0.25rem 0' }} />
-          <div className="flex-between">
-            <span className="text-muted">{activeTab === 'STOCK' ? '累计买入股票成本:' : '累计买入期权付出权利金:'}</span>
-            <span style={{ color: 'var(--color-error)' }}>-{currency}{stats.tabBuyCost.toFixed(2)}</span>
-          </div>
-          <div className="flex-between">
-            <span className="text-muted">{activeTab === 'STOCK' ? '累计卖出股票回收:' : '累计卖出期权收取权利金:'}</span>
-            <span style={{ color: 'var(--color-success)' }}>+{currency}{stats.tabSellProceeds.toFixed(2)}</span>
-          </div>
-          <div className="flex-between">
-            <span className="text-muted">佣金及税费:</span>
-            <span style={{ color: 'var(--color-error)' }}>-{currency}{stats.tabFees.toFixed(2)}</span>
-          </div>
-          <div style={{ borderTop: '1px dashed var(--border-color)', margin: '0.25rem 0' }} />
-          <div className="flex-between" style={{ fontWeight: 700 }}>
-            <span>{activeTab === 'STOCK' ? '正股估算盈亏:' : '期权估算盈亏:'}</span>
-            <span style={{ color: (activeTab === 'STOCK' ? stats.stockPnl : stats.optionPnl) >= 0 ? 'var(--market-up)' : 'var(--market-down)' }}>
-              {(activeTab === 'STOCK' ? stats.stockPnl : stats.optionPnl) >= 0 ? '+' : ''}
-              {(activeTab === 'STOCK' ? stats.stockPnl : stats.optionPnl).toFixed(2)}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      {/* Transaction Details */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <FileText size={16} className="text-muted" />
-          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>
-            {activeTab === 'STOCK' ? '正股流水明细' : '期权流水明细'} ({stats.txnsList.length})
-          </span>
-        </div>
-
-        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.25rem' }}>
-          {stats.txnsList.length === 0 ? (
-            <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: '0.8rem', padding: '1.5rem 0' }}>
-              在此区间内无交易流水
-            </div>
-          ) : (
-            stats.txnsList.map((tx) => {
-              const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN';
-              const mult = PortfolioSecurityRules.optionMultiplier(tx.assetType, tx.symbol);
-              const amountVal = tx.price * tx.quantity * mult;
-
-              return (
-                <div 
-                  key={tx.id} 
-                  style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', borderBottom: '1px solid rgba(255,255,255,0.04)', paddingBottom: '0.5rem', cursor: 'pointer' }}
-                  onClick={() => navigate(`/transactions/${tx.id}`)}
-                >
-                  <div className="flex-between">
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                      <span className={`badge ${isBuy ? 'success' : 'error'}`}>
-                        {TradeTypeLabels[tx.tradeType] || tx.tradeType}
-                      </span>
-                      <span style={{ fontWeight: 600, fontSize: '0.85rem' }}>
-                        {tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {currency}{tx.price.toFixed(2)}
-                      </span>
-                      {tx.assetType === 'OPTION' && (
-                        <span className="text-xs text-muted font-mono">{tx.symbol}</span>
-                      )}
-                    </div>
-                    <span style={{ 
-                      fontWeight: 700, 
-                      fontSize: '0.85rem',
-                      color: isBuy ? 'var(--color-error)' : 'var(--color-success)' 
-                    }}>
-                      {isBuy ? '-' : '+'}{currency}{amountVal.toFixed(2)}
-                    </span>
-                  </div>
-                  <div className="flex-between" style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-                      <Calendar size={12} />
-                      <span>{tx.tradeDate} {tx.tradeTime}</span>
-                    </div>
-                    <span>手续费: {currency}{(tx.commission + tx.tax).toFixed(2)}</span>
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </div>
-      </div>
+  return <div className="page page-secondary stock-detail-page">
+    <SecondaryPageHeader title={<span className="secondary-page-title-stack"><span>{stats.securityName} ({targetSymbol}.{targetMarket})</span><small>包含正股及全部关联期权交易</small></span>} fallback="/analysis" />
+    <div className="range-selector stock-detail-range-selector">
+      {rangeOptions.map(([value, label]) => <button key={value} type="button" className={range === value ? 'active' : ''} onClick={() => setRange(value)}>{label}</button>)}
     </div>
-  );
+    {range === 'CUSTOM' && <div className="stock-detail-custom-range"><label>开始<input type="date" min={securityDateBounds.min} max={securityDateBounds.max} value={customStart || securityDateBounds.min} onChange={(event) => setCustomStart(event.target.value)} /></label><span>至</span><label>结束<input type="date" min={securityDateBounds.min} max={securityDateBounds.max} value={customEnd || securityDateBounds.max} onChange={(event) => setCustomEnd(event.target.value)} /></label></div>}
+
+    {activeTab === 'STOCK' && <section className="stock-detail-card stock-detail-kline-card">
+      <div className="stock-detail-card-title"><TrendingUp size={16} /><span>日 K 线走势</span></div>
+      {hasChartData ? <StockChart bars={chartBars} trades={stockTrades} timeRange={range === 'CUSTOM' ? 'ALL' : range as ChartRange} colorScheme={colorScheme} height={300} /> : <div className="stock-detail-kline-empty">暂无该范围内的日 K 线数据<br /><span>请确保已配置行情 API，然后按需补齐当前范围。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}{hasAnyKline ? '补齐日 K 线' : '获取行情'}</button></div>}
+      {needsKlineFill && hasChartData && <div className="stock-detail-kline-fill"><span>当前时间范围内日 K 线不完整，可按需补齐。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}补齐日 K 线</button></div>}
+    </section>}
+
+    <section className="stock-detail-card stock-detail-pnl-card"><div className="stock-detail-card-title"><span>累计盈亏</span><span className="stock-detail-card-helper">{rangeBounds.fromDate} – {rangeBounds.toDate}</span></div><div className="stock-detail-pnl-label">累计盈亏 ({displayCurrency.code})</div><strong className={isProfit ? 'profit' : 'loss'}>{signed(stats.totalPnl, displayCurrency)}</strong><div className="stock-detail-split"><span>正股 <b className={stats.stockPnl >= 0 ? 'profit' : 'loss'}>{signed(stats.stockPnl, displayCurrency)}</b></span><span>衍生品 <b className={stats.optionPnl >= 0 ? 'profit' : 'loss'}>{signed(stats.optionPnl, displayCurrency)}</b></span></div></section>
+
+    {stats.hasOptions && <div className="stock-detail-tabs"><button type="button" className={activeTab === 'STOCK' ? 'active' : ''} onClick={() => setActiveTab('STOCK')}>正股</button><button type="button" className={activeTab === 'OPTION' ? 'active' : ''} onClick={() => setActiveTab('OPTION')}>衍生品</button></div>}
+
+    <section className="stock-detail-card stock-detail-breakdown-card"><div className="stock-detail-card-title"><Info size={16} /><span>盈亏构成</span></div><div className="stock-detail-lines"><div className="stock-detail-line"><span>持仓市值</span><b>{nativeAmount(stats.closingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计入账金额<small>股票/期权卖出</small></span><b className="profit">{nativeAmount(stats.sellProceeds, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计出账金额<small>股票/期权买入</small></span><b className="loss">-{nativeAmount(stats.buyCost, displayCurrency)}</b></div><div className="stock-detail-line"><span>费用合计<small>佣金及税费</small></span><b className="loss">-{nativeAmount(stats.fees, displayCurrency)}</b></div><div className="stock-detail-divider" /><div className="stock-detail-line stock-detail-total"><span>盈亏合计</span><b className={selectedPnl >= 0 ? 'profit' : 'loss'}>{signed(selectedPnl, displayCurrency)}</b></div></div><p className="stock-detail-formula">盈亏合计 = 持仓市值 + 累计入账金额 − 累计出账金额 − 费用</p></section>
+
+    <section className="stock-detail-card stock-detail-transactions-card"><div className="stock-detail-card-title"><FileText size={16} /><span>流水明细</span><small>共 {stats.txnsList.length} 笔</small></div>{stats.txnsList.length === 0 ? <div className="stock-detail-empty">当前区间内没有交易记录</div> : <div className="stock-detail-transactions">{stats.txnsList.map((tx) => { const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN'; const value = txAmount(tx, displayCurrency); return <button type="button" className="stock-detail-transaction" key={tx.id} onClick={() => navigate(`/transactions/${tx.id}`)}><div><span className={`badge ${isBuy ? 'success' : 'error'}`}>{TradeTypeLabels[tx.tradeType] || tx.tradeType}</span><b>{tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {amount(convertToCny(tx.price, tx.market, defaultExchangeRates), displayCurrency)}</b></div><strong className={isBuy ? 'loss' : 'profit'}>{isBuy ? '-' : '+'}{displayCurrency.symbol}{value.toFixed(2)}</strong><small><Calendar size={12} />{tx.tradeDate} {tx.tradeTime} <span>费用 {amount(convertToCny(tx.commission + tx.tax, tx.market, defaultExchangeRates), displayCurrency)}</span></small></button>; })}</div>}</section>
+  </div>;
 }

@@ -11,6 +11,7 @@ import { HistoricalGapAnalyzer } from './HistoricalGapAnalyzer';
 import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
 import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
+import { latestExpectedDailyCloseDate } from './marketDataCacheService';
 
 export interface ImportMarketCacheOptions {
   overwrite?: boolean;
@@ -35,28 +36,6 @@ export interface MarketCacheImportReport {
 
 const RESOLUTION = '1d' as const;
 
-const MARKET_TIME_ZONES: Record<string, string> = {
-  US: 'America/New_York',
-  HK: 'Asia/Hong_Kong',
-  A_SHARE: 'Asia/Shanghai',
-};
-
-/**
- * Return the calendar date that applies to a market, rather than the device's
- * UTC date. A range may end on a weekend or holiday; the provider simply
- * returns the last available trading-day bar within that range.
- */
-export function marketTodayForHistoricalSync(market: string, referenceAt = new Date()): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: MARKET_TIME_ZONES[market] ?? 'UTC',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  }).formatToParts(referenceAt);
-  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value;
-  return `${part('year')}-${part('month')}-${part('day')}`;
-}
-
 function makeSecurityKey(symbol: string, market: string): string {
   return `${market}:${symbol}`;
 }
@@ -77,7 +56,7 @@ const NON_QUOTABLE_TRADE_TYPES = new Set([
   'DEPOSIT', 'WITHDRAW', 'TRANSFER_OUT', 'TRANSFER_IN', 'INTEREST', 'TAX', 'FX_CONVERSION', 'OTHER', 'DIVIDEND',
 ]);
 
-interface HistoricalRangeRequest {
+export interface HistoricalRangeRequest {
   securityKey: string;
   symbol: string;
   market: string;
@@ -91,7 +70,7 @@ interface HistoricalRangeRequest {
  * 区间从首笔可报价交易日延伸到该市场本地的今天。
  * 过滤掉现金、利息、转账、外汇等非行情记录。
  */
-function getHistoricalRangeRequestsFromTransactions(
+export function getHistoricalRangeRequestsFromTransactions(
   transactions: Transaction[],
   referenceAt = new Date(),
 ): HistoricalRangeRequest[] {
@@ -130,6 +109,7 @@ function getHistoricalRangeRequestsFromTransactions(
   for (const [key, info] of groups) {
     const dates = Array.from(info.dates).sort();
     if (dates.length === 0) continue;
+    const latestCloseDate = latestExpectedDailyCloseDate(info.market, referenceAt);
     requests.push({
       securityKey: key,
       symbol: info.symbol,
@@ -137,8 +117,8 @@ function getHistoricalRangeRequestsFromTransactions(
       assetType: info.assetType,
       fromDate: dates[0],
       toDate: Math.abs(positions[key]?.quantity ?? 0) > 1e-5
-        ? marketTodayForHistoricalSync(info.market, referenceAt)
-        : dates[dates.length - 1],
+        ? latestCloseDate
+        : (dates[dates.length - 1] < latestCloseDate ? dates[dates.length - 1] : latestCloseDate),
     });
   }
 
@@ -525,13 +505,24 @@ export class MarketCacheManager {
       // historicalCoverage, including exchange holidays with no daily bar.  Do
       // not infer a gap from weekday bars here: doing so makes every app launch
       // re-request the same complete range (and repeatedly retries holidays).
-      const coverage = (await db.historicalCoverage.where('securityKey').equals(req.securityKey).toArray())
+      const rawCoverage = (await db.historicalCoverage.where('securityKey').equals(req.securityKey).toArray())
         .filter((item) => item.resolution === RESOLUTION && item.coverageStatus === 'complete')
         .sort((left, right) => left.fromDate.localeCompare(right.fromDate));
+      const coverage: HistoricalCoverage[] = [];
+      for (const item of rawCoverage) {
+        const hasBar = await db.historicalBars.where('securityKey').equals(req.securityKey)
+          .and((bar) => bar.resolution === RESOLUTION && bar.tradeDate >= item.fromDate && bar.tradeDate <= item.toDate)
+          .first();
+        if (hasBar) coverage.push(item);
+      }
       const uncovered = subtractCoveredRanges(req.fromDate, req.toDate, coverage.map((item) => ({ fromDate: item.fromDate, toDate: item.toDate })));
 
       for (const missing of uncovered) {
         const id = `hist_fill_${req.market}_${req.symbol}_${missing.fromDate}_${missing.toDate}`;
+        const noDataTerminal = await db.marketWorkItems.where('kind').equals('historical_range_fill')
+          .and((item) => item.securityKey === req.securityKey && item.status === 'no_data' && item.requiredFromDate === missing.fromDate && item.requiredToDate === missing.toDate)
+          .first();
+        if (noDataTerminal) continue;
         newItems.push({
           id,
           kind: 'historical_range_fill',

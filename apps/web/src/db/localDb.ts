@@ -3,7 +3,6 @@ import {
   Ledger,
   Transaction,
   QuoteSnapshot,
-  HistoricalDailyBar,
   MarketProviderConfig,
   AppSetting,
   BackupImportRecord,
@@ -23,7 +22,6 @@ export class LocalDatabase extends Dexie {
   ledgers!: Table<Ledger, number>;
   transactions!: Table<Transaction, number>;
   quoteSnapshots!: Table<QuoteSnapshot, string>;
-  historicalDailyBars!: Table<HistoricalDailyBar, string>;
   marketProviderConfigs!: Table<MarketProviderConfig, string>;
   appSettings!: Table<AppSetting, string>;
   backupImportRecords!: Table<BackupImportRecord, number>;
@@ -199,6 +197,39 @@ export class LocalDatabase extends Dexie {
         });
       }
     });
+
+    // Version 9: Canonicalize every legacy daily bar before removing its table.
+    // This is intentionally idempotent so interrupted upgrades can resume safely.
+    this.version(9).stores({
+      historicalDailyBars: 'id, symbol, market, date, [market+symbol+date], [symbol+market+assetType+date]',
+      historicalBars: 'id, securityKey, symbol, market, assetType, resolution, tradeDate, [securityKey+resolution+tradeDate]',
+    }).upgrade(async (tx) => {
+      const oldBars = await tx.table('historicalDailyBars').toArray();
+      const newBarsTable = tx.table('historicalBars');
+      for (const bar of oldBars) {
+        const assetType = (bar.assetType || 'STOCK').toLowerCase();
+        await newBarsTable.put({
+          id: `${bar.market}:${bar.symbol}:${assetType}:1d:${bar.date}`,
+          securityKey: `${bar.market}:${bar.symbol}`,
+          symbol: bar.symbol,
+          market: bar.market,
+          assetType,
+          resolution: '1d',
+          tradeDate: bar.date,
+          open: bar.open ?? undefined,
+          high: bar.high ?? undefined,
+          low: bar.low ?? undefined,
+          close: bar.close,
+          volume: bar.volume ?? undefined,
+          providerId: bar.provider || 'unknown',
+          fetchedAt: bar.fetchedAt || Date.now(),
+          dataQuality: 'normal',
+        });
+      }
+    });
+
+    // Version 10: Drop the legacy store after the canonical copy succeeds.
+    this.version(10).stores({ historicalDailyBars: null });
   }
 }
 

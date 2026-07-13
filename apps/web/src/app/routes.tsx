@@ -25,6 +25,7 @@ export default function AppRoutes() {
       <Route path="/data" element={<DataPage />} />
       <Route path="/data/backup" element={<ImportExportPage />} />
       <Route path="/data/imports" element={<ImportExportPage />} />
+      <Route path="/data/email-imports" element={<ImportExportPage />} />
       <Route path="/data/cache" element={<MarketCachePage />} />
       <Route path="/import-export" element={<Navigate to="/data/backup" replace />} />
       <Route path="/market-cache" element={<Navigate to="/data/cache" replace />} />

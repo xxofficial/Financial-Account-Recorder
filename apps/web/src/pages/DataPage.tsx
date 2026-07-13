@@ -37,7 +37,7 @@ export default function DataPage() {
       <span className="data-entry-icon"><Icon size={21} /></span><span className="data-entry-copy"><strong>{title}</strong><small>{desc}</small></span><ChevronRight size={20} className="text-muted" />
     </button>)}</div>
     {isAndroid && mailboxes.length > 0 && <section className="data-email-card">
-      <div className="data-email-heading"><span><Mail size={19} /><strong>邮箱手动同步</strong></span><button type="button" onClick={() => navigate('/data/imports')}><Inbox size={16} />查看待确认导入</button></div>
+      <div className="data-email-heading"><span><Mail size={19} /><strong>邮箱手动同步</strong></span><button type="button" onClick={() => navigate('/data/email-imports')}><Inbox size={16} />查看待确认导入</button></div>
       <p>邮箱账号在设置页管理。同步邮件只会进入待确认收件箱，不会直接写入账本。</p>
       <div className="data-email-mailboxes">{mailboxes.map((mailbox) => <div key={mailbox.mailboxId}>
         <span><strong>{mailbox.provider === 'ZHUORUI' ? '卓锐证券' : '嘉信国际'}</strong><small>{maskedAccount(mailbox.account)} · {mailbox.lastStatus || '未同步'}</small></span>

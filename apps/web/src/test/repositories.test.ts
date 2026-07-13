@@ -22,7 +22,7 @@ describe('Database Repositories', () => {
     await db.ledgers.clear();
     await db.transactions.clear();
     await db.quoteSnapshots.clear();
-    await db.historicalDailyBars.clear();
+    await db.historicalBars.clear();
     await db.marketProviderConfigs.clear();
     await db.appSettings.clear();
 

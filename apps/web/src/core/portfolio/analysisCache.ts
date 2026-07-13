@@ -18,6 +18,10 @@ export class AnalysisComputationCache {
 
   constructor(private readonly execute: AnalysisExecutor) {}
 
+  peek(cacheKey: string): AnalysisPoint[] | undefined {
+    return this.completed.get(cacheKey);
+  }
+
   get(cacheKey: string, request: AnalysisDataRequest): Promise<AnalysisPoint[]> {
     const cached = this.completed.get(cacheKey);
     if (cached) return Promise.resolve(cached);

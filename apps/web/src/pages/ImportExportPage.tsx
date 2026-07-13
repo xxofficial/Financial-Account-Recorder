@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
 import { backupService, BackupPreview } from '../core/backup/backupService';
 import { TradeType } from '../db/schema';
@@ -11,7 +10,6 @@ import {
   FileText,
   CheckCircle,
   LoaderCircle,
-  History,
   Calendar,
   Layers,
   Database,
@@ -57,6 +55,8 @@ export default function ImportExportPage() {
   const [statementMessage, setStatementMessage] = useState('');
   const isAndroid = isAndroidNativeRuntime();
   const { activePlatform } = useAppShell();
+  const isBackupRoute = location.pathname.endsWith('/backup');
+  const isEmailRoute = location.pathname.endsWith('/email-imports');
 
   useEffect(() => {
     if (isAndroid || !activePlatform) return;
@@ -78,10 +78,11 @@ export default function ImportExportPage() {
   };
 
   useEffect(() => {
+    if (!isEmailRoute) return;
     void refreshNativeInbox();
-  // Native runtime detection is stable for the lifetime of the app.
+  // Native runtime detection and route mode are stable for the lifetime of the page.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [isEmailRoute]);
 
   const handleImportNativeItem = async (preview: NativeInboxPreview) => {
     if (preview.candidates.length === 0) return;
@@ -155,12 +156,6 @@ export default function ImportExportPage() {
       setStatementBusy(false);
     }
   };
-
-  // Fetch import history reactive query
-  const importHistory = useLiveQuery(async () => {
-    if (!db.backupImportRecords) return [];
-    return db.backupImportRecords.orderBy('importedAt').reverse().toArray();
-  }) ?? [];
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files[0]) {
@@ -245,12 +240,12 @@ export default function ImportExportPage() {
   };
 
   return (
-    <div className="page page-secondary">
+    <div className={`page page-secondary import-export-page ${isBackupRoute ? 'is-backup-page' : isEmailRoute ? 'is-email-page' : 'is-import-page'}`}>
       {/* Header */}
-      <SecondaryPageHeader title={location.pathname.endsWith('/backup') ? '备份与迁移' : '邮件与结单导入'} fallback="/data" />
+      <SecondaryPageHeader title={isBackupRoute ? '备份与迁移' : isEmailRoute ? '邮件导入确认' : '电子结单导入'} fallback="/data" />
 
-      {isAndroid && (
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      {isEmailRoute && isAndroid && (
+        <div className="glass-card import-export-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
             <Inbox size={18} style={{ color: 'var(--accent)' }} />
             <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Android 待导入收件箱</h3>
@@ -299,7 +294,17 @@ export default function ImportExportPage() {
         </div>
       )}
 
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      {isEmailRoute && !isAndroid && (
+        <div className="glass-card import-export-section import-export-unavailable">
+          <Inbox size={22} aria-hidden="true" />
+          <div>
+            <h3>邮件导入仅支持 Android</h3>
+            <p>请在 Android 应用中配置邮箱并确认待导入交易。Web/PWA 仍可使用电子结单 PDF 导入。</p>
+          </div>
+        </div>
+      )}
+
+      {!isBackupRoute && !isEmailRoute && <div className="glass-card import-export-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <FileText size={18} style={{ color: 'var(--accent)' }} />
           <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入文本 PDF 结单</h3>
@@ -307,7 +312,14 @@ export default function ImportExportPage() {
         <p className="text-xs text-muted" style={{ margin: 0 }}>
           支持长桥、汇丰、uSMART 与嘉信的可复制文本结单。PDF、密码和提取文本只在本次浏览器会话中使用；扫描件不支持。
         </p>
-        <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf" onChange={handleStatementFileChange} disabled={statementBusy} />
+        <label className="import-export-file-row">
+          <span className="import-export-file-icon"><FileText size={18} aria-hidden="true" /></span>
+          <span className="import-export-file-copy">
+            <strong>{statementFile ? '已选择 PDF 结单' : '选择 PDF 结单'}</strong>
+            <small>{statementFile ? statementFile.name : '支持文本型 PDF；扫描件暂不支持'}</small>
+          </span>
+          <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf" onChange={handleStatementFileChange} disabled={statementBusy} />
+        </label>
         {statementFile && (
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <input
@@ -337,10 +349,10 @@ export default function ImportExportPage() {
             </button>
           </>
         )}
-      </div>
+      </div>}
 
       {/* Export Section */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      {isBackupRoute && <div className="glass-card import-export-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Download size={18} className="text-accent" style={{ color: 'var(--accent)' }} />
           <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导出本地备份</h3>
@@ -353,10 +365,10 @@ export default function ImportExportPage() {
           <Download size={16} />
           下载备份 JSON
         </button>
-      </div>
+      </div>}
 
       {/* Import Section */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+      {isBackupRoute && <div className="glass-card import-export-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <Upload size={18} className="text-accent" style={{ color: 'var(--accent)' }} />
           <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入外部备份</h3>
@@ -365,34 +377,14 @@ export default function ImportExportPage() {
           选择本应用或原 Android 客户端导出的 JSON 备份文件。
         </p>
 
-        {/* Drag and Drop Box */}
-        <div style={{
-          border: '2px dashed var(--border-color)',
-          borderRadius: '10px',
-          padding: '1.75rem 1rem',
-          textAlign: 'center',
-          backgroundColor: 'rgba(31, 41, 55, 0.15)',
-          cursor: 'pointer',
-          position: 'relative',
-          transition: 'all 0.2s ease',
-        }}
-        className="list-item-hover"
-        >
-          <Upload size={28} style={{ color: 'var(--text-muted)', marginBottom: '0.5rem' }} />
-          <div className="text-sm" style={{ fontWeight: 600 }}>
-            {selectedFile ? '已选择文件' : '点击此处选择备份文件'}
-          </div>
-          <div className="text-xs text-muted" style={{ marginTop: '0.25rem' }}>
-            {selectedFile ? selectedFile.name : '支持 *.json 格式文件'}
-          </div>
-          <input 
-            type="file" 
-            accept=".json"
-            onChange={handleFileChange}
-            disabled={isImporting}
-            style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', opacity: 0, cursor: isImporting ? 'not-allowed' : 'pointer' }}
-          />
-        </div>
+        <label className="import-export-file-row">
+          <span className="import-export-file-icon"><Upload size={18} aria-hidden="true" /></span>
+          <span className="import-export-file-copy">
+            <strong>{selectedFile ? '已选择备份文件' : '选择备份文件'}</strong>
+            <small>{selectedFile ? selectedFile.name : '支持 .json 格式文件'}</small>
+          </span>
+          <input type="file" accept=".json" onChange={handleFileChange} disabled={isImporting} />
+        </label>
 
         {isImporting && (
           <div role="status" aria-live="polite" style={{ padding: '0.75rem', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', display: 'flex', gap: '0.5rem', alignItems: 'center', fontSize: '0.8rem' }}>
@@ -592,50 +584,8 @@ export default function ImportExportPage() {
             )}
           </div>
         )}
-      </div>
+      </div>}
 
-      {/* History log Section */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <History size={18} className="text-muted" />
-          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入历史审计</h3>
-        </div>
-        
-        {importHistory.length === 0 ? (
-          <div className="text-xs text-muted" style={{ textAlign: 'center', padding: '1rem 0' }}>
-            暂无历史数据恢复记录
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', maxHeight: '180px', overflowY: 'auto', paddingRight: '0.25rem' }}>
-            {importHistory.map((record) => {
-              const isSuccess = record.status === 'SUCCESS';
-              return (
-                <div key={record.id} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem', padding: '0.5rem', backgroundColor: 'var(--bg-secondary)', border: '1px solid var(--border-color)', borderRadius: '8px', fontSize: '0.75rem' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                    <div style={{ fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '240px' }} title={record.fileName}>
-                      {record.fileName}
-                    </div>
-                    <span className={`badge ${isSuccess ? 'success' : 'error'}`} style={{ fontSize: '0.65rem', padding: '0.05rem 0.3rem' }}>
-                      {isSuccess ? '成功' : '失败'}
-                    </span>
-                  </div>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', color: 'var(--text-muted)', fontSize: '0.7rem' }}>
-                    <span>导入时间: {formatDate(record.importedAt)}</span>
-                    {isSuccess && (
-                      <span>数据: {record.ledgerCount}L / {record.transactionCount}T</span>
-                    )}
-                  </div>
-                  {!isSuccess && record.message && (
-                    <div style={{ color: '#fca5a5', fontSize: '0.65rem', marginTop: '0.1rem', wordBreak: 'break-all' }}>
-                      错误: {record.message}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </div>
     </div>
   );
 }
