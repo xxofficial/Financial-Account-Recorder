@@ -59,8 +59,36 @@ for (const width of phoneWidths) {
     });
     await page.goto('/#/settings');
     await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '通用偏好' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '平台配置' })).toBeVisible();
     await expect(page.getByText('邮箱同步')).toHaveCount(0);
+    await page.getByRole('button', { name: /涨跌颜色/ }).click();
+    const marketPicker = page.getByRole('dialog', { name: '选择涨跌颜色' });
+    await expect(marketPicker).toBeVisible();
+    await expect(marketPicker.getByRole('button', { name: /红涨绿跌/ })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: /主题色/ }).click();
+    const themePicker = page.getByRole('dialog', { name: '选择主题色' });
+    await expect(themePicker).toBeVisible();
+    await expect(themePicker.getByRole('button', { name: /跟随系统/ })).toBeVisible();
+    await themePicker.getByRole('button', { name: /暗色/ }).click();
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await page.getByRole('button', { name: /主题色/ }).click();
+    await page.getByRole('dialog', { name: '选择主题色' }).getByRole('button', { name: /跟随系统/ }).click();
+    await page.keyboard.press('Escape');
     await expect(page).toHaveScreenshot(`settings-${width}.png`, {
+      animations: 'disabled',
+      fullPage: true,
+      maxDiffPixelRatio: 0.05,
+    });
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await expect(page.locator('.secondary-page-header')).toBeVisible();
+    await page.getByRole('button', { name: /卓锐证券/ }).click();
+    await expect(page.getByText('费率方案')).toBeVisible();
+    await expect(page.getByText('电子结单密码')).toBeVisible();
+    await page.getByText('高级与诊断').click();
+    await expect(page.getByText('行情 API 与直连优先级配置')).toBeVisible();
+    await expect(page).toHaveScreenshot(`settings-platform-advanced-${width}.png`, {
       animations: 'disabled',
       fullPage: true,
       maxDiffPixelRatio: 0.05,
@@ -94,5 +122,40 @@ for (const width of phoneWidths) {
       fullPage: true,
       maxDiffPixelRatio: 0.05,
     });
+    await page.locator('.transactions-sheet-header button').click();
+    await page.goto('/#/transactions/new?type=BUY');
+    await expect(page.getByRole('heading', { name: '录入交易' })).toBeVisible();
+    await expect(page.locator('.trade-form-page')).toBeVisible();
+    await expect(page.locator('.bottom-tab-bar')).toHaveCount(0);
+    await expect(page.locator('.sync-card')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /自动估算/ })).toBeDisabled();
+    await expect(page.getByText('自动估算（待实现）')).toBeVisible();
+    await expect(page).toHaveScreenshot(`transaction-form-${width}.png`, {
+      animations: 'disabled',
+      fullPage: true,
+      maxDiffPixelRatio: 0.05,
+    });
+    await page.goto('/#/transactions/new?type=DEPOSIT');
+    await expect(page.getByText('货币种类')).toBeVisible();
+    await expect(page.getByText('入金金额')).toBeVisible();
+    await expect(page.getByText('市场')).toHaveCount(0);
+    await expect(page.getByRole('button', { name: /自动估算/ })).toHaveCount(0);
+    await page.goto('/#/transactions/new?type=BUY');
+    await page.getByRole('button', { name: '期权' }).click();
+    await expect(page.getByText('正股代码')).toBeVisible();
+    await expect(page.getByText('期权类型')).toBeVisible();
   });
 }
+
+test('record action sheet stays usable on a short mobile viewport', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 640 });
+  await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
+  await page.goto('/#/');
+  await page.getByRole('button', { name: '记一笔' }).click();
+  await expect(page.getByRole('dialog', { name: '记一笔' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '取消' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '其他' })).toBeVisible();
+  await expect(page).toHaveScreenshot('record-action-sheet-short-390.png', { animations: 'disabled', maxDiffPixelRatio: 0.05 });
+  await page.getByRole('button', { name: '其他' }).click();
+  await expect(page.getByRole('heading', { name: '录入交易' })).toBeVisible();
+});

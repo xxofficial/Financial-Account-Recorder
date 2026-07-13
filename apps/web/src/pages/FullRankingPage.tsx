@@ -4,7 +4,8 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
 import { useAppShell } from '../app/AppShell';
 import { PortfolioCalculator, ExchangeRates, convertToCny, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
-import { ArrowLeft, TrendingUp, TrendingDown, ArrowUpDown } from 'lucide-react';
+import { TrendingUp, TrendingDown, ArrowUpDown } from 'lucide-react';
+import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
 const calculator = new PortfolioCalculator();
 const defaultExchangeRates: ExchangeRates = {
@@ -102,14 +103,9 @@ export default function FullRankingPage() {
   }, [rawTxns, quotes, range, showProfit, sortAscending]);
 
   return (
-    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+    <div className="page page-secondary secondary-detail-page">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-        <button onClick={() => navigate(-1)} style={{ padding: '0.5rem', background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer' }}>
-          <ArrowLeft size={20} />
-        </button>
-        <h1 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>盈亏排行</h1>
-      </div>
+      <SecondaryPageHeader title="盈亏排行" fallback="/analysis" />
 
       {/* Range Selector */}
       <div className="flex-between gap-2" style={{ overflowX: 'auto', paddingBottom: '0.25rem' }}>

@@ -20,6 +20,8 @@ import {
 } from 'lucide-react';
 import { TradeTypeLabels } from '../shared/models';
 import { isAndroidNativeRuntime } from '../platform/nativeRuntime';
+import { useAppShell } from '../app/AppShell';
+import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 import { parsePdfStatementText, type ParsedTradeCandidate } from '@recoder/core';
 import { extractPdfText } from '../core/imports/pdfTextExtractor';
 import {
@@ -54,6 +56,14 @@ export default function ImportExportPage() {
   const [statementBusy, setStatementBusy] = useState(false);
   const [statementMessage, setStatementMessage] = useState('');
   const isAndroid = isAndroidNativeRuntime();
+  const { activePlatform } = useAppShell();
+
+  useEffect(() => {
+    if (isAndroid || !activePlatform) return;
+    void db.appSettings.get(`statement_pdf_password_${activePlatform}`).then((setting) => {
+      if (typeof setting?.value === 'string') setStatementPassword(setting.value);
+    });
+  }, [activePlatform, isAndroid]);
 
   const refreshNativeInbox = async (passwords = pdfPasswords) => {
     if (!isAndroid) return;
@@ -124,8 +134,7 @@ export default function ImportExportPage() {
     const file = event.target.files?.[0];
     if (!file) return;
     setStatementFile(file);
-    setStatementPassword('');
-    void previewStatementFile(file);
+    void previewStatementFile(file, statementPassword);
   };
 
   const handleImportStatement = async () => {
@@ -238,14 +247,7 @@ export default function ImportExportPage() {
   return (
     <div className="page page-secondary">
       {/* Header */}
-      <div className="screen-header">
-        <button className="icon-button" onClick={() => navigate('/data')}>←</button>
-        <div><h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700 }}>
-          {location.pathname.endsWith('/backup') ? '备份与迁移' : '邮件与结单导入'}
-        </h1><p className="text-xs text-muted" style={{ margin: '2px 0 0' }}>
-          {location.pathname.endsWith('/backup') ? '导出 v5 备份，或导入旧 Android 与其他设备的数据。' : '所有候选交易均须确认后才会写入账本。'}
-        </p></div>
-      </div>
+      <SecondaryPageHeader title={location.pathname.endsWith('/backup') ? '备份与迁移' : '邮件与结单导入'} fallback="/data" />
 
       {isAndroid && (
         <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>

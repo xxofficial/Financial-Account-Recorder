@@ -9,6 +9,7 @@ import { cacheService } from '../core/market/marketDataCacheService';
 import { isAndroidNativeRuntime, nativeAppUpdate, type NativeAppUpdate } from '../platform/nativeRuntime';
 import { BrokerPlatform, CurrencyType, DisplayCurrency, PlatformType } from '../shared/models';
 import { ExchangeRates, PortfolioCalculator } from '../core/portfolio/portfolioCalculator';
+import { useEdgeSwipeBack } from '../components/SecondaryPageHeader';
 
 interface AppShellProps { children: React.ReactNode; }
 type RefreshAction = (() => Promise<void>) | undefined;
@@ -23,6 +24,7 @@ interface AppShellContextValue {
 
 const AppShellContext = createContext<AppShellContextValue | null>(null);
 
+// eslint-disable-next-line react-refresh/only-export-components
 export function useAppShell() {
   const context = useContext(AppShellContext);
   if (!context) throw new Error('useAppShell must be used inside AppShell');
@@ -185,19 +187,23 @@ function RecordActionSheet({ close }: { close: () => void }) {
     ['资金操作', [['DEPOSIT', '入金'], ['WITHDRAW', '出金'], ['TRANSFER_IN', '转入'], ['TRANSFER_OUT', '转出'], ['FX_CONVERSION', '货币兑换']]],
     ['公司行动与其他', [['DIVIDEND', '股息'], ['TAX', '税费'], ['INTEREST', '利息'], ['SPLIT', '拆股'], ['EXPIRE', '期权到期'], ['OTHER', '其他']]],
   ];
-  return <div className="action-sheet-backdrop" onClick={close}><div className="action-sheet" onClick={(event) => event.stopPropagation()}>
-    {groups.map(([title, actions]) => <section key={title as string} style={{ marginBottom: 16 }}><div className="text-xs text-muted" style={{ margin: '0 0 6px 4px' }}>{title as string}</div><div className="surface-list">{(actions as string[][]).map(([type, label]) => <button key={type} className="list-row" onClick={() => open(type)}><span className="list-row-main"><span className="list-row-title">{label}</span></span><ChevronRight size={18} /></button>)}</div></section>)}
-    <button onClick={close} style={{ width: '100%' }}>取消</button>
+  return <div className="action-sheet-backdrop" onClick={close}><div className="action-sheet" role="dialog" aria-modal="true" aria-label="记一笔" onClick={(event) => event.stopPropagation()}>
+    <div className="action-sheet-scroll">
+      {groups.map(([title, actions]) => <section key={title as string} className="action-sheet-group"><div className="text-xs text-muted action-sheet-group-title">{title as string}</div><div className="surface-list">{(actions as string[][]).map(([type, label]) => <button key={type} className="list-row" onClick={() => open(type)}><span className="list-row-main"><span className="list-row-title">{label}</span></span><ChevronRight size={18} /></button>)}</div></section>)}
+    </div>
+    <button className="action-sheet-cancel" onClick={close}>取消</button>
   </div></div>;
 }
 
 export default function AppShell({ children }: AppShellProps) {
   const location = useLocation();
+  const navigate = useNavigate();
   const [drawerOpen, setDrawerOpen] = useState(false); const [recordOpen, setRecordOpen] = useState(false);
   const [availableUpdate, setAvailableUpdate] = useState<NativeAppUpdate | null>(null);
   const [portfolioRefresh, setPortfolioRefresh] = useState<RefreshAction>();
   const [refreshing, setRefreshing] = useState(false);
   const marketScheme = useLiveQuery(async () => (await db.appSettings.get('candlestick_color_scheme'))?.value) ?? 'red_up';
+  const themePreference = useLiveQuery(async () => (await db.appSettings.get('theme_preference'))?.value) ?? 'system';
   const selectedPlatformValue = useLiveQuery(async () => (await db.appSettings.get('selected_platform'))?.value) ?? null;
   const enabledPlatformsValue = useLiveQuery(async () => (await db.appSettings.get('enabled_platforms'))?.value);
   const activePlatform = typeof selectedPlatformValue === 'string' && selectedPlatformValue in BrokerPlatform
@@ -207,6 +213,9 @@ export default function AppShell({ children }: AppShellProps) {
     ? configurablePlatforms.filter((platform) => enabledPlatformsValue.includes(platform))
     : configurablePlatforms;
   const isTopLevelTab = TAB_ROUTES.has(location.pathname);
+  const secondaryFallback = location.pathname.startsWith('/analysis/') ? '/analysis'
+    : location.pathname.startsWith('/data/') ? '/data'
+      : location.pathname.startsWith('/transactions/') ? '/transactions' : '/';
   const registerPortfolioRefresh = useCallback((action: RefreshAction) => setPortfolioRefresh(() => action), []);
   const selectPlatform = useCallback(async (platform: PlatformType | null) => {
     await db.appSettings.put({ key: 'selected_platform', value: platform, updatedAt: Date.now() });
@@ -224,7 +233,26 @@ export default function AppShell({ children }: AppShellProps) {
     setRefreshing(true);
     try { await portfolioRefresh(); } finally { setRefreshing(false); }
   };
+  useEdgeSwipeBack(!isTopLevelTab && !drawerOpen && !recordOpen && !availableUpdate, () => {
+    const historyState = window.history.state as { idx?: number } | null;
+    if (typeof historyState?.idx === 'number' && historyState.idx > 0) navigate(-1);
+    else navigate(secondaryFallback, { replace: true });
+  });
   useEffect(() => { document.documentElement.dataset.marketScheme = marketScheme === 'green_up' ? 'green_up' : 'red_up'; }, [marketScheme]);
+  useEffect(() => {
+    const root = document.documentElement;
+    const applyTheme = () => {
+      const preference = themePreference === 'light' || themePreference === 'dark' ? themePreference : 'system';
+      root.dataset.theme = preference;
+      root.style.colorScheme = preference === 'system' ? '' : preference;
+    };
+    applyTheme();
+    if (themePreference !== 'system' || !window.matchMedia) return;
+    const media = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = () => applyTheme();
+    media.addEventListener?.('change', onChange);
+    return () => media.removeEventListener?.('change', onChange);
+  }, [themePreference]);
   useEffect(() => { void prepareMarketSyncOnAppOpen().catch((error) => console.warn('行情启动检查失败', error)); }, []);
   useEffect(() => {
     if (!isAndroidNativeRuntime()) return;
@@ -242,12 +270,12 @@ export default function AppShell({ children }: AppShellProps) {
   ];
   return <AppShellContext.Provider value={{ registerPortfolioRefresh, activePlatform, selectPlatform, enabledPlatforms, setPlatformVisibility }}><div className="app-container"><main className="app-main">
     {isTopLevelTab && <GlobalTopBar onOpenDrawer={() => setDrawerOpen(true)} onRefresh={location.pathname === '/' ? () => void refreshPortfolio() : undefined} refreshing={refreshing} />}
-    <MarketSyncCard />
+    {isTopLevelTab && <MarketSyncCard />}
     {children}
   </main>
-    <nav className="bottom-tab-bar">{navItems.slice(0, 2).map((item) => <NavLink key={item.path} to={item.path} className={({ isActive }) => `bottom-tab-item ${isActive ? 'active' : ''}`}>{item.icon}<span>{item.label}</span></NavLink>)}
+    {isTopLevelTab && <nav className="bottom-tab-bar">{navItems.slice(0, 2).map((item) => <NavLink key={item.path} to={item.path} className={({ isActive }) => `bottom-tab-item ${isActive ? 'active' : ''}`}>{item.icon}<span>{item.label}</span></NavLink>)}
       <div className="bottom-plus-wrap"><button className="bottom-plus" onClick={() => setRecordOpen(true)} aria-label="记一笔"><Plus size={28} /></button></div>
-      {navItems.slice(2).map((item) => <NavLink key={item.path} to={item.path} className={({ isActive }) => `bottom-tab-item ${isActive ? 'active' : ''}`}>{item.icon}<span>{item.label}</span></NavLink>)}</nav>
+      {navItems.slice(2).map((item) => <NavLink key={item.path} to={item.path} className={({ isActive }) => `bottom-tab-item ${isActive ? 'active' : ''}`}>{item.icon}<span>{item.label}</span></NavLink>)}</nav>}
     {drawerOpen && <LedgerDrawer close={() => setDrawerOpen(false)} />}{recordOpen && <RecordActionSheet close={() => setRecordOpen(false)} />}
     {availableUpdate && <div className="action-sheet-backdrop"><div className="action-sheet"><h2 className="page-title">发现新版本</h2><p className="text-sm text-muted">{availableUpdate.latestVersionName || 'GitHub Release'} · {availableUpdate.assetName}</p><div style={{ display: 'flex', gap: 8 }}><button className="primary" style={{ flex: 1 }} onClick={() => void installUpdate()}>下载并安装</button><button style={{ flex: 1 }} onClick={() => setAvailableUpdate(null)}>稍后</button></div></div></div>}
   </div></AppShellContext.Provider>;

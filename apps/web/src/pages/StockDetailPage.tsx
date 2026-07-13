@@ -1,11 +1,12 @@
 import { useState, useMemo } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { ArrowLeft, Calendar, FileText, Info, RefreshCw, TrendingUp } from 'lucide-react';
+import { Calendar, FileText, Info, RefreshCw, TrendingUp } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
 import { PortfolioCalculator, ExchangeRates, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
 import { TradeTypeLabels } from '../shared/models';
 import StockChart from '../components/StockChart';
+import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import { historicalBarsToChartBars, type ChartRange, type CandlestickColorScheme } from '../core/chart/chartDataUtils';
@@ -255,19 +256,7 @@ export default function StockDetailPage() {
   return (
     <div className="page page-secondary">
       {/* Header */}
-      <div className="screen-header">
-        <button className="icon-button" onClick={() => navigate(-1)}>
-          <ArrowLeft size={20} />
-        </button>
-        <div>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <h1 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>
-              {stats.securityName} ({targetSymbol}.{targetMarket})
-            </h1>
-          </div>
-          <span className="text-xs text-muted">包含正股及全部关联期权交易</span>
-        </div>
-      </div>
+      <SecondaryPageHeader title={<span className="secondary-page-title-stack"><span>{stats.securityName} ({targetSymbol}.{targetMarket})</span><small>包含正股及全部关联期权交易</small></span>} fallback="/analysis" />
 
       {/* Range Segment Selector */}
       <div className="range-selector">

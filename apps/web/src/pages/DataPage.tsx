@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArchiveRestore, ChevronRight, Database, FileText, Inbox, Mail, RefreshCw } from 'lucide-react';
 import { isAndroidNativeRuntime, nativeEmailSync, type NativeEmailSyncConfig } from '../platform/nativeRuntime';
@@ -14,11 +14,11 @@ export default function DataPage() {
   const [mailboxes, setMailboxes] = useState<NativeEmailSyncConfig[]>([]);
   const [syncing, setSyncing] = useState('');
   const [mailMessage, setMailMessage] = useState('');
-  const refreshMailboxes = async () => {
+  const refreshMailboxes = useCallback(async () => {
     if (!isAndroid) return;
     setMailboxes((await nativeEmailSync.status()).configs.filter((config) => config.passwordConfigured));
-  };
-  useEffect(() => { void refreshMailboxes(); }, [isAndroid]);
+  }, [isAndroid]);
+  useEffect(() => { void refreshMailboxes(); }, [refreshMailboxes]);
   const syncMailbox = async (mailbox: NativeEmailSyncConfig) => {
     setSyncing(mailbox.mailboxId); setMailMessage('');
     try { const result = await nativeEmailSync.syncNow({ mailboxId: mailbox.mailboxId }); setMailMessage(result.message); await refreshMailboxes(); }

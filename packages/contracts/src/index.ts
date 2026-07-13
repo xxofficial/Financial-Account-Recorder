@@ -64,6 +64,7 @@ export const backupV5Schema = z.object({
   displayCurrency: z.string(),
   enabledPlatforms: z.array(z.string()),
   feePlanSelections: z.record(z.string()).default({}),
+  zhuoruiPromoConfig: z.object({ startDate: z.string(), durationDays: z.number().int().positive() }).optional(),
   ledgers: z.array(ledgerV5Schema),
   transactions: z.array(transactionV5Schema),
 });

@@ -2,6 +2,8 @@
 
 本文档定义了原 Android 项目 (`recoder`) 源码中的类、实体、数据流及 UI 界面到 Web PWA 项目中的映射关系，为后续阶段的迁移提供清晰的代码映射指南。
 
+全局 UI 字体、间距、颜色、圆角和页面层级统一遵循 [Android / Web UI 视觉规范](./UI_VISUAL_GUIDELINES.md)。
+
 ---
 
 ## 一、 数据库与模型映射 (Database & Models)

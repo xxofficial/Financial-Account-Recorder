@@ -16,6 +16,7 @@ import {
   Calendar,
   BarChart3,
 } from 'lucide-react';
+import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
 export default function MarketCachePage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -155,16 +156,8 @@ export default function MarketCachePage() {
   };
 
   return (
-    <div style={{ padding: '1.25rem', display: 'flex', flexDirection: 'column', gap: '1.5rem', maxWidth: '720px', margin: '0 auto' }}>
-      {/* Header */}
-      <div>
-        <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 800, background: 'var(--accent-gradient)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-          行情缓存管理
-        </h1>
-        <p className="text-xs text-muted" style={{ marginTop: '0.25rem' }}>
-          导入/导出历史行情缓存、查看覆盖范围、生成缺失清单并显式触发同步。
-        </p>
-      </div>
+    <div className="page page-secondary market-cache-page">
+      <SecondaryPageHeader title="行情缓存管理" fallback="/data" />
 
       {/* Stats overview */}
       <div className="glass-card" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '0.75rem' }}>

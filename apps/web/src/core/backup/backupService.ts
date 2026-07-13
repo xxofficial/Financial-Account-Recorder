@@ -282,6 +282,7 @@ export class BackupService {
     const displayCurrency = (await db.appSettings.get('display_currency'))?.value ?? 'CNY';
     const enabledPlatforms = (await db.appSettings.get('enabled_platforms'))?.value ?? [];
     const feePlanSelections = (await db.appSettings.get('platform_fee_plan_selections'))?.value ?? {};
+    const zhuoruiPromoConfig = (await db.appSettings.get('zhuorui_promo_config'))?.value;
     return backupV5Schema.parse({
       format: BACKUP_V5_FORMAT,
       version: BACKUP_V5_VERSION,
@@ -289,6 +290,7 @@ export class BackupService {
       displayCurrency,
       enabledPlatforms,
       feePlanSelections,
+      zhuoruiPromoConfig,
       ledgers: backupLedgers,
       transactions: backupTransactions,
     });
@@ -400,6 +402,7 @@ export class BackupService {
         await db.appSettings.put({ key: 'display_currency', value: incoming.displayCurrency, updatedAt: now() });
         await db.appSettings.put({ key: 'enabled_platforms', value: incoming.enabledPlatforms, updatedAt: now() });
         await db.appSettings.put({ key: 'platform_fee_plan_selections', value: incoming.feePlanSelections, updatedAt: now() });
+        if (incoming.zhuoruiPromoConfig) await db.appSettings.put({ key: 'zhuorui_promo_config', value: incoming.zhuoruiPromoConfig, updatedAt: now() });
       }
 
       // A restored backup can receive different auto-incremented ledger IDs after

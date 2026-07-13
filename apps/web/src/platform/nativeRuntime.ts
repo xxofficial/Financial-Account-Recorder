@@ -16,7 +16,7 @@ type NativeInboxPlugin = {
 };
 
 type NativeDocumentPlugin = {
-  extractPdfText(options: { path: string; password?: string }): Promise<{ text: string; isEmpty: boolean }>;
+  extractPdfText(options: { path: string; password?: string; passwordKey?: string }): Promise<{ text: string; isEmpty: boolean }>;
 };
 
 type SecureSecretPlugin = {
@@ -92,6 +92,7 @@ export const nativeAppUpdate = registerPlugin<NativeAppUpdatePlugin>('AppUpdate'
 const nativeMarket = registerPlugin<NativeMarketPlugin>('NativeMarket');
 
 export const nativeSecretKeyForProvider = (provider: 'itick' | 'twelvedata' | 'marketdata') => `market_${provider}_api_key`;
+export const nativeSecretKeyForStatement = (platform: string) => `statement_pdf_password_${platform}`;
 export const nativeSecretPlaceholder = (provider: 'itick' | 'twelvedata' | 'marketdata') =>
   `__RECORDER_SECRET_${nativeSecretKeyForProvider(provider)}__`;
 

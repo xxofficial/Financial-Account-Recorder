@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import {
@@ -203,7 +204,7 @@ export default function TransactionsPage() {
     const rows = ledgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(ledgerId).toArray();
     return activePlatform ? rows.filter((row) => row.platform === activePlatform) : rows;
   }, [activeLedgerId, activePlatform]);
-  const rawTransactions = liveTransactions ?? [];
+  const rawTransactions = useMemo(() => liveTransactions ?? [], [liveTransactions]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [startDate, setStartDate] = useState('');
@@ -240,7 +241,12 @@ export default function TransactionsPage() {
   const sections = useMemo(() => groupTransactionsByDate(filtered), [filtered]);
 
   const hasFilters = cashFilter !== 'ALL' || currencyFilter !== 'ALL' || sceneFilter !== 'ALL' || Boolean(startDate || endDate);
-  const toggleSelection = (id: number) => setSelectedIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const toggleSelection = (id: number) => setSelectedIds((current) => {
+    const next = new Set(current);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    return next;
+  });
   const exitBatchMode = () => { setShowBatchMode(false); setSelectedIds(new Set()); };
   const selectAll = () => setSelectedIds(selectedIds.size === filtered.length ? new Set() : new Set(filtered.map((tx) => tx.id).filter((id): id is number => typeof id === 'number')));
 

@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Key, Globe, Database, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Activity, Trash2, ListFilter, X, BarChart3, ChevronRight } from 'lucide-react';
+import { Key, Database, ShieldAlert, CheckCircle2, AlertCircle, RefreshCw, Activity, Trash2, ListFilter, X, BarChart3, ChevronRight, ArrowUp, ArrowDown, Check } from 'lucide-react';
 import { db } from '../db/localDb';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ItickProvider } from '../core/market/itickProvider';
@@ -14,14 +14,20 @@ import {
 } from '../platform/nativeRuntime';
 import AndroidEmailSyncCard from '../components/AndroidEmailSyncCard';
 import AppUpdateCard from '../components/AppUpdateCard';
+import PlatformSettingsSection from '../components/PlatformSettingsSection';
+import { useAppShell } from '../app/AppShell';
+import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
 type ProviderName = 'itick' | 'twelvedata' | 'marketdata';
 
 export default function SettingsPage() {
   const navigate = useNavigate();
   const isAndroid = isAndroidNativeRuntime();
-  const [currency, setCurrency] = useState('CNY');
+  const { activePlatform, enabledPlatforms } = useAppShell();
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [candlestickColorScheme, setCandlestickColorScheme] = useState('red_up');
+  const [themePreference, setThemePreference] = useState<'system' | 'light' | 'dark'>('system');
+  const [activePicker, setActivePicker] = useState<'market' | 'theme' | null>(null);
   const [autoSyncAfterImport, setAutoSyncAfterImport] = useState(isAndroidNativeRuntime());
   const [autoSyncAfterTransaction, setAutoSyncAfterTransaction] = useState(isAndroidNativeRuntime());
   const [autoSyncDailyClose, setAutoSyncDailyClose] = useState(isAndroidNativeRuntime());
@@ -66,16 +72,13 @@ export default function SettingsPage() {
   useEffect(() => {
     // Load local settings from Dexie
     const loadSettings = async () => {
-      // 1. Currency
-      const currencySetting = await db.appSettings.get('display_currency');
-      if (currencySetting) {
-        setCurrency(currencySetting.value);
-      }
-
-      // 2. Candlestick color scheme
       const csSetting = await db.appSettings.get('candlestick_color_scheme');
       if (csSetting && ['red_up', 'green_up'].includes(csSetting.value)) {
         setCandlestickColorScheme(csSetting.value);
+      }
+      const themeSetting = await db.appSettings.get('theme_preference');
+      if (themeSetting && ['system', 'light', 'dark'].includes(themeSetting.value)) {
+        setThemePreference(themeSetting.value as 'system' | 'light' | 'dark');
       }
       const [afterImport, afterTransaction, dailyClose] = await Promise.all([
         db.appSettings.get('auto_sync_after_import'),
@@ -288,19 +291,6 @@ export default function SettingsPage() {
         resolveApiKey('twelvedata', twelveKey),
         resolveApiKey('marketdata', marketdataKey),
       ]);
-      // 1. Save Currency
-      await db.appSettings.put({
-        key: 'display_currency',
-        value: currency,
-        updatedAt: Date.now()
-      });
-
-      // 2. Save Candlestick color scheme
-      await db.appSettings.put({
-        key: 'candlestick_color_scheme',
-        value: candlestickColorScheme,
-        updatedAt: Date.now()
-      });
       await Promise.all([
         db.appSettings.put({ key: 'auto_sync_after_import', value: autoSyncAfterImport, updatedAt: Date.now() }),
         db.appSettings.put({ key: 'auto_sync_after_transaction', value: autoSyncAfterTransaction, updatedAt: Date.now() }),
@@ -357,6 +347,20 @@ export default function SettingsPage() {
     }
   };
 
+  const updatePreference = async (key: 'candlestick_color_scheme' | 'theme_preference', value: string) => {
+    await db.appSettings.put({ key, value, updatedAt: Date.now() });
+    if (key === 'candlestick_color_scheme') setCandlestickColorScheme(value);
+    else if (['system', 'light', 'dark'].includes(value)) setThemePreference(value as 'system' | 'light' | 'dark');
+    setActivePicker(null);
+  };
+
+  useEffect(() => {
+    if (!activePicker) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setActivePicker(null); };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activePicker]);
+
   const formatBytes = (bytes: number) => {
     if (bytes === 0) return '0 B';
     const k = 1024;
@@ -390,58 +394,58 @@ export default function SettingsPage() {
   return (
     <div className="page page-secondary">
       {/* Header */}
-      <div className="screen-header">
-        <button className="icon-button" onClick={() => navigate(-1)}>←</button>
-        <div><h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700 }}>设置</h1>
-        <p className="text-xs text-muted" style={{ marginTop: '0.25rem', marginBottom: 0 }}>
-          配置记账首选项、多行情直连秘钥、通道优先级与检查本地存储。
-        </p></div>
-      </div>
+      <SecondaryPageHeader title="设置" fallback="/" />
 
-      {isAndroid && (
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem' }}>
-          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>Android 默认行情通道</h3>
-          <span className="text-xs text-muted">
-            已默认启用：腾讯实时/复权日K，新浪搜索与行情补缺，Yahoo 美股期权行情与日K。无需 API Key；下方第三方通道仅作为可选扩展。
-          </span>
-        </div>
-      )}
-
-      <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-        {/* Basic Settings */}
-        <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <Globe size={16} />
-            基本首选项
-          </h3>
-
-          <div>
-            <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>主本位币 (Display Currency)</label>
-            <select value={currency} onChange={(e) => setCurrency(e.target.value)}>
-              <option value="CNY">人民币 (CNY - ¥)</option>
-              <option value="USD">美元 (USD - $)</option>
-              <option value="HKD">港币 (HKD - HK$)</option>
-            </select>
-            <span className="text-xs text-muted" style={{ marginTop: '0.25rem', display: 'block' }}>
-              所有其他外币交易（如美股、港股）在仪表盘与持仓列表中均会自动转换为此主本位币展示。
+      <section className="settings-group settings-global-group">
+        <div className="settings-group-heading"><h2>通用偏好</h2><p>影响所有账本、平台和页面的展示方式。</p></div>
+        <div className="glass-card settings-global-card settings-preference-list">
+          <button type="button" className="settings-preference-row" onClick={() => setActivePicker('market')}>
+            <span className="settings-preference-label">涨跌颜色</span>
+            <span className="settings-preference-value">
+              <span className="market-scheme-icon" aria-hidden="true"><ArrowUp size={18} /><ArrowDown size={18} /></span>
+              <span>{candlestickColorScheme === 'green_up' ? '绿涨红跌' : '红涨绿跌'}</span>
+              <ChevronRight size={18} aria-hidden="true" />
             </span>
-          </div>
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
-            <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>K线涨跌配色</label>
-            <select
-              value={candlestickColorScheme}
-              onChange={(e) => setCandlestickColorScheme(e.target.value)}
-            >
-              <option value="red_up">红涨绿跌（A股/港股习惯）</option>
-              <option value="green_up">绿涨红跌（美股习惯）</option>
-            </select>
-            <span className="text-xs text-muted" style={{ marginTop: '0.25rem', display: 'block' }}>
-              统一控制行情涨跌、盈亏数值与日 K 线配色；错误与删除提示不受影响。
-            </span>
-          </div>
-
+          </button>
+          <button type="button" className="settings-preference-row" onClick={() => setActivePicker('theme')}>
+            <span className="settings-preference-label">主题色</span>
+            <span className="settings-preference-value"><span>{themePreference === 'light' ? '亮色' : themePreference === 'dark' ? '暗色' : '跟随系统'}</span><ChevronRight size={18} aria-hidden="true" /></span>
+          </button>
         </div>
+      </section>
 
+      {activePicker && <div className="action-sheet-backdrop" onClick={() => setActivePicker(null)}>
+        <div className="action-sheet settings-preference-sheet" role="dialog" aria-modal="true" aria-label={activePicker === 'market' ? '选择涨跌颜色' : '选择主题色'} onClick={(event) => event.stopPropagation()}>
+          <div className="settings-preference-sheet-header"><h2>{activePicker === 'market' ? '涨跌颜色' : '主题色'}</h2><button type="button" className="icon-button" onClick={() => setActivePicker(null)} aria-label="关闭"><X size={18} /></button></div>
+          <div className="surface-list">
+            {(activePicker === 'market' ? [
+              { value: 'red_up', label: '红涨绿跌', hint: 'A 股 / 港股常用' },
+              { value: 'green_up', label: '绿涨红跌', hint: '美股常用' },
+            ] : [
+              { value: 'system', label: '跟随系统', hint: '自动匹配设备外观' },
+              { value: 'light', label: '亮色', hint: '始终使用亮色界面' },
+              { value: 'dark', label: '暗色', hint: '始终使用暗色界面' },
+            ]).map((option) => {
+              const selected = activePicker === 'market' ? candlestickColorScheme === option.value : themePreference === option.value;
+              return <button type="button" key={option.value} className={`list-row settings-preference-option${selected ? ' selected' : ''}`} onClick={() => void updatePreference(activePicker === 'market' ? 'candlestick_color_scheme' : 'theme_preference', option.value)}>
+                {activePicker === 'market' && <span className={`market-scheme-icon ${option.value === 'green_up' ? 'green-up' : 'red-up'}`} aria-hidden="true"><ArrowUp size={18} /><ArrowDown size={18} /></span>}
+                <span className="list-row-main"><span className="list-row-title">{option.label}</span><small>{option.hint}</small></span>
+                {selected && <Check size={18} aria-label="已选择" />}
+              </button>;
+            })}
+          </div>
+        </div>
+      </div>}
+      <PlatformSettingsSection activePlatform={activePlatform} enabledPlatforms={enabledPlatforms} />
+      {isAndroid && <section className="settings-group settings-services-group">
+        <div className="settings-group-heading"><h2>Android 服务</h2><p>仅 Android 提供应用更新和邮箱同步能力。</p></div>
+        <AppUpdateCard />
+        <AndroidEmailSyncCard />
+      </section>}
+
+      <details className="settings-advanced" open={advancedOpen} onToggle={(event) => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}>
+        <summary><span><strong>高级与诊断</strong><small>行情同步、数据源、缓存和本地存储</small></span><ChevronRight size={18} /></summary>
+      <form onSubmit={handleSaveSettings} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginTop: '12px' }}>
         <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
           <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>行情同步</h3>
           <p className="text-xs text-muted" style={{ margin: 0 }}>仅在应用打开后检查。实时价格始终需要在持仓页手动刷新。</p>
@@ -612,16 +616,7 @@ export default function SettingsPage() {
           </button>
         </div>
       </form>
-
-      {isAndroid && <AndroidEmailSyncCard />}
-      <AppUpdateCard />
-
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-        <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>结单密码</h3>
-        <p className="text-xs text-muted" style={{ margin: 0 }}>
-          加密的 PDF 结单会在导入时请求密码。密码只用于当前解析，不会保存到备份、浏览器存储或 Android 原生数据库。
-        </p>
-      </div>
+      </details>
 
       {/* Diagnostics intentionally removed from the product UI; data source setup remains above. */}
       {showDiagnostics && <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
@@ -765,6 +760,8 @@ export default function SettingsPage() {
         </div>
       </div>}
 
+      <details className="settings-advanced settings-advanced-extra">
+      <summary><span><strong>存储与缓存</strong><small>本地存储保护和行情缓存管理</small></span><ChevronRight size={18} /></summary>
       {/* Storage and PWA Section */}
       <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
         <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
@@ -830,6 +827,7 @@ export default function SettingsPage() {
           <ChevronRight size={14} />
         </button>
       </div>
+      </details>
 
       {/* Log view Modal Drawer */}
       {logViewProvider && (

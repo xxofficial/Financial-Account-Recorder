@@ -15,7 +15,10 @@ class DocumentTextPlugin : Plugin() {
     @PluginMethod
     fun extractPdfText(call: PluginCall) {
         val path = call.getString("path") ?: return call.reject("path is required")
-        val password = call.getString("password", "") ?: ""
+        val passwordKey = call.getString("passwordKey")
+        val password = call.getString("password", "")?.takeUnless { it.isBlank() }
+            ?: passwordKey?.let { SecureSecretStore.readForNative(context, it) }
+            ?: ""
         Thread {
             runCatching {
                 PDDocument.load(File(path), password).use { document ->

@@ -1,7 +1,7 @@
 import { createSyncId, createTransactionFingerprint, parseBrokerText, parsePdfStatementText, type ParsedTradeCandidate } from '@recoder/core';
 import { db } from '../../db/localDb';
 import type { Transaction } from '../../db/schema';
-import { isAndroidNativeRuntime, nativeDocument, nativeInbox, type NativeInboxItem } from '../../platform/nativeRuntime';
+import { isAndroidNativeRuntime, nativeDocument, nativeInbox, nativeSecretKeyForStatement, type NativeInboxItem } from '../../platform/nativeRuntime';
 
 export interface NativeInboxPreview {
   item: NativeInboxItem;
@@ -105,7 +105,11 @@ async function inboxText(item: NativeInboxItem, password?: string): Promise<{ te
     const path = typeof payload.path === 'string' ? payload.path : '';
     if (!path) return { text: '', warnings: ['PDF 待导入项缺少文件路径。'] };
     try {
-      const response = await nativeDocument.extractPdfText({ path, password: password || undefined });
+      const response = await nativeDocument.extractPdfText({
+        path,
+        password: password || undefined,
+        passwordKey: password ? undefined : nativeSecretKeyForStatement(item.platform),
+      });
       return response.isEmpty
         ? { text: '', warnings: ['未从 PDF 提取到文本。扫描件不受支持，请使用可复制文本的电子结单。'] }
         : { text: response.text, warnings: [] };

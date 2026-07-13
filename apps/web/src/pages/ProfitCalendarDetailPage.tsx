@@ -4,7 +4,8 @@ import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
 import { useAppShell } from '../app/AppShell';
 import { PortfolioCalculator, ExchangeRates, convertToCny, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
-import { ArrowLeft, ChevronLeft, ChevronRight, Info, TrendingUp } from 'lucide-react';
+import { ChevronLeft, ChevronRight, Info, TrendingUp } from 'lucide-react';
+import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
 type Mode = 'DAY' | 'WEEK' | 'MONTH' | 'YEAR';
 type Unit = 'AMOUNT' | 'PERCENT';
@@ -228,14 +229,9 @@ export default function ProfitCalendarDetailPage() {
   }, [parsedDate]);
 
   return (
-    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
+    <div className="page page-secondary secondary-detail-page">
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-        <button onClick={() => navigate(-1)} style={{ padding: '0.5rem', background: 'none', border: 'none', color: 'var(--text-primary)', cursor: 'pointer' }}>
-          <ArrowLeft size={20} />
-        </button>
-        <h1 style={{ margin: 0, fontSize: '1.2rem', fontWeight: 700 }}>收益日历</h1>
-      </div>
+      <SecondaryPageHeader title="收益日历" fallback="/analysis" />
 
       {/* Mode Selector */}
       <div className="flex-between" style={{ gap: '0.5rem' }}>
