@@ -43,6 +43,7 @@ type NativeAppUpdatePlugin = {
 };
 
 export type NativeEmailSyncConfig = {
+  mailboxId: string;
   provider: 'ZHUORUI' | 'SCHWAB';
   imapHost: string;
   imapPort: number;
@@ -55,8 +56,8 @@ export type NativeEmailSyncConfig = {
 };
 
 type NativeEmailSyncPlugin = {
-  configure(options: Omit<NativeEmailSyncConfig, 'passwordConfigured' | 'lastSyncAt' | 'lastStatus'> & { password?: string }): Promise<NativeEmailSyncConfig>;
-  syncNow(options: { provider: 'ZHUORUI' | 'SCHWAB' }): Promise<{
+  configure(options: Omit<NativeEmailSyncConfig, 'mailboxId' | 'passwordConfigured' | 'lastSyncAt' | 'lastStatus'> & { mailboxId?: string; password?: string }): Promise<NativeEmailSyncConfig>;
+  syncNow(options: { mailboxId: string }): Promise<{
     scannedCount: number;
     queuedCount: number;
     duplicateCount: number;
@@ -65,7 +66,8 @@ type NativeEmailSyncPlugin = {
     message: string;
   }>;
   status(): Promise<{ configs: NativeEmailSyncConfig[]; logs: Array<{ id: string; provider: string; level: string; message: string; createdAt: number }> }>;
-  disable(options: { provider: 'ZHUORUI' | 'SCHWAB' }): Promise<void>;
+  disable(options: { mailboxId: string }): Promise<void>;
+  remove(options: { mailboxId: string }): Promise<void>;
 };
 
 export type NativeInboxItem = {

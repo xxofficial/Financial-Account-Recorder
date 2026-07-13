@@ -350,5 +350,25 @@ describe('Portfolio Calculator & Rules', () => {
       expect(pos.quantity).toBe(0);
       expect(pos.realizedProfit).toBe(500);
     });
+
+    it('21. should expose the net inflow, fees, and trade counts shown on the holdings dashboard', () => {
+      const txs = [
+        mockTx({ tradeType: 'DEPOSIT', market: 'CASH', symbol: 'CASH', price: 1000, quantity: 1, commission: 0, tax: 0, createdAt: 1 }),
+        mockTx({ tradeType: 'WITHDRAW', market: 'CASH', symbol: 'CASH', price: 200, quantity: 1, commission: 0, tax: 0, createdAt: 2 }),
+        mockTx({ tradeType: 'BUY', market: 'US', symbol: 'AAPL', price: 100, quantity: 2, commission: 2, tax: 1, createdAt: 3 }),
+        mockTx({ tradeType: 'SELL', market: 'US', symbol: 'AAPL', price: 110, quantity: 1, commission: 3, tax: 2, createdAt: 4 }),
+      ];
+
+      const snapshot = calculator.calculate(txs, [], defaultRates);
+
+      expect(snapshot.totalDepositCny).toBe(1000);
+      expect(snapshot.totalWithdrawCny).toBe(200);
+      expect(snapshot.netInflowCny).toBe(800);
+      expect(snapshot.totalCommissionCny).toBe(36);
+      expect(snapshot.totalTaxCny).toBe(21.6);
+      expect(snapshot.securityTradeCount).toBe(2);
+      expect(snapshot.buyTradeCount).toBe(1);
+      expect(snapshot.sellTradeCount).toBe(1);
+    });
   });
 });

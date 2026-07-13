@@ -3,7 +3,7 @@ import { db } from '../db/localDb';
 import { ItickProvider } from '../core/market/itickProvider';
 import { TwelvedataProvider } from '../core/market/twelvedataProvider';
 import { MarketDataAppProvider } from '../core/market/marketDataProvider';
-import { MarketDataCacheService } from '../core/market/marketDataCacheService';
+import { latestExpectedDailyCloseDate, MarketDataCacheService } from '../core/market/marketDataCacheService';
 import { AndroidDefaultMarketProvider } from '../core/market/androidDefaultMarketProvider';
 import { HistoricalRequestPlanner, INITIAL_CAPABILITIES } from '../core/market/HistoricalRequestPlanner';
 
@@ -541,6 +541,20 @@ describe('Market Data Providers and Cache Service', () => {
           updatedAt: Date.now(),
         },
       ]);
+    });
+
+    it('uses each market timezone and skips weekends when finding the latest expected close', () => {
+      expect(latestExpectedDailyCloseDate('US', new Date('2026-07-13T12:00:00Z'))).toBe('2026-07-10');
+      expect(latestExpectedDailyCloseDate('HK', new Date('2026-07-14T02:00:00Z'))).toBe('2026-07-13');
+    });
+
+    it('does not requeue a provider-confirmed no_data daily close on later app opens', async () => {
+      await db.transactions.add({ ledgerId: 1, tradeType: 'BUY', platform: 'SCHWAB', sourceChannel: null, externalReference: null, market: 'US', symbol: 'AAPL', name: 'Apple', tradeDate: '2026-07-01', tradeTime: '10:00:00', price: 100, quantity: 1, commission: 0, tax: 0, note: '', createdAt: Date.now(), updatedAt: Date.now(), investorName: null, assetType: 'STOCK', underlyingSymbol: null, expiryDate: null, strikePrice: null, optionType: null, fxFromCurrency: null, fxFromAmount: null, fxToCurrency: null, fxToAmount: null, fxRate: null } as any);
+      await db.marketWorkItems.add({ id: 'daily_update_US_AAPL_2026-07-10', kind: 'daily_close_update', securityKey: 'US:AAPL', symbol: 'AAPL', market: 'US', assetType: 'stock', resolution: '1d', tradeDate: '2026-07-10', sourceReason: 'daily_close_update', priority: 700, status: 'no_data', attemptCount: 1, createdAt: Date.now(), updatedAt: Date.now() });
+
+      await cacheService.triggerDailyCloseUpdate(new Date('2026-07-13T12:00:00Z'));
+
+      expect(await db.marketWorkItems.where('kind').equals('daily_close_update').count()).toBe(1);
     });
 
     it('should refresh quotes using active providers in priority order and save to DB', async () => {

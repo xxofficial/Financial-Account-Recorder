@@ -1,520 +1,298 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
-import { 
-  Search, Plus, Calendar, ArrowUpRight, ArrowDownLeft, 
-  ChevronDown, ChevronRight, SlidersHorizontal, CheckSquare, Square, Trash2
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
+import {
+  CalendarDays,
+  Check,
+  Filter,
+  Search,
+  Trash2,
+  X,
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
-import { TransactionRepository, AppSettingRepository } from '../db/repositories';
-import { Transaction } from '../db/schema';
-import { BrokerPlatform, TradeTypeLabels, TradeType, PlatformType } from '../shared/models';
+import { db } from '../db/localDb';
+import { TransactionRepository } from '../db/repositories';
+import { Market, BrokerPlatform, TradeTypeLabels, type MarketType, type PlatformType, type TradeType } from '../shared/models';
+import { PlatformMark, useAppShell } from '../app/AppShell';
+import type { Transaction, Ledger } from '../db/schema';
+import type { ReactNode } from 'react';
 
 const txnRepo = new TransactionRepository();
-const settingRepo = new AppSettingRepository();
+
+type CashFlowFilter = 'ALL' | 'INFLOW' | 'OUTFLOW';
+type CurrencyFilter = 'ALL' | 'USD' | 'HKD' | 'CNY';
+type SceneFilter = 'ALL' | 'STOCK_TRADE' | 'OPTION_TRADE' | 'MARGIN' | 'IPO' | 'CASH_IO' | 'CORPORATE_ACTION' | 'FX_CONVERSION' | 'CAPITAL_TRANSFER' | 'OTHER';
+
+const currencyOptions: Array<[CurrencyFilter, string]> = [['ALL', '全部币种'], ['USD', '美元'], ['HKD', '港币'], ['CNY', '人民币']];
+const sceneOptions: Array<[SceneFilter, string]> = [
+  ['ALL', '全部场景'], ['STOCK_TRADE', '股票交易'], ['OPTION_TRADE', '期权交易'], ['MARGIN', '融资融券'],
+  ['IPO', '新股申购'], ['CASH_IO', '出入金'], ['CORPORATE_ACTION', '公司行动'], ['FX_CONVERSION', '货币兑换'],
+  ['CAPITAL_TRANSFER', '资金调拨'], ['OTHER', '其他'],
+];
+
+function tradeType(tx: Transaction): TradeType {
+  return tx.tradeType;
+}
+
+export function cashFlow(tx: Transaction): number {
+  const type = tradeType(tx);
+  const multiplier = tx.assetType === 'OPTION' ? 100 : 1;
+  const gross = tx.price * tx.quantity * multiplier;
+  const fees = tx.commission + tx.tax;
+  switch (type) {
+    case 'BUY': return -(gross + fees);
+    case 'SELL': return gross - fees;
+    case 'DEPOSIT':
+    case 'TRANSFER_IN': return gross;
+    case 'WITHDRAW':
+    case 'TRANSFER_OUT':
+    case 'INTEREST':
+    case 'TAX': return -gross;
+    case 'DIVIDEND': return gross - tx.tax;
+    case 'OTHER': return gross;
+    default: return 0;
+  }
+}
+
+function isIpo(tx: Transaction): boolean {
+  const text = [tx.externalReference, tx.name, tx.note].filter(Boolean).join(' ');
+  return /IPO|新股|中签|中簽/i.test(text);
+}
+
+export function sceneFor(tx: Transaction): SceneFilter {
+  const type = tradeType(tx);
+  if (isIpo(tx)) return 'IPO';
+  if (type === 'FX_CONVERSION') return 'FX_CONVERSION';
+  if (type === 'INTEREST') return 'MARGIN';
+  if (type === 'DEPOSIT' || type === 'WITHDRAW') return 'CASH_IO';
+  if (type === 'TRANSFER_IN' || type === 'TRANSFER_OUT') return 'CAPITAL_TRANSFER';
+  if (tx.assetType === 'OPTION' && ['BUY', 'SELL', 'EXPIRE'].includes(type)) return 'OPTION_TRADE';
+  if (['DIVIDEND', 'TAX', 'SPLIT', 'EXPIRE'].includes(type)) return 'CORPORATE_ACTION';
+  if (type === 'BUY' || type === 'SELL') return 'STOCK_TRADE';
+  return 'OTHER';
+}
+
+export function currencyFor(tx: Transaction): CurrencyFilter {
+  if (tx.tradeType === 'FX_CONVERSION') {
+    if ([tx.fxFromCurrency, tx.fxToCurrency].some((value) => value?.toUpperCase() === 'USD')) return 'USD';
+    if ([tx.fxFromCurrency, tx.fxToCurrency].some((value) => value?.toUpperCase() === 'HKD')) return 'HKD';
+  }
+  if (tx.market === 'US') return 'USD';
+  if (tx.market === 'HK') return 'HKD';
+  return 'CNY';
+}
+
+export function formatDateTitle(date: string): string {
+  const [year, month, day] = date.split('-');
+  return year && month && day ? `${year}年${Number(month)}月${Number(day)}日` : date;
+}
+
+function formatAmount(value: number, market: string): string {
+  const info = Market[(market in Market ? market : 'CASH') as MarketType];
+  if (Math.abs(value) < 0.005) return `${info.currencySymbol}0.00`;
+  const sign = value > 0 ? '+' : '-';
+  return `${sign}${info.currencySymbol}${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+}
+
+function titleFor(tx: Transaction): string {
+  if (tx.tradeType === 'FX_CONVERSION') return `${tx.fxFromCurrency ?? ''} → ${tx.fxToCurrency ?? ''}`.trim() || '货币兑换';
+  if (tx.tradeType === 'DEPOSIT' || tx.tradeType === 'WITHDRAW') return `${Market[(tx.market in Market ? tx.market : 'CASH') as MarketType].currencySymbol} 资金账户`;
+  if (tx.tradeType === 'INTEREST') return '融资利息';
+  if (tx.tradeType === 'TAX') return tx.name || '公司行动费用';
+  if (tx.tradeType === 'OTHER') return tx.name || (tx.price < 0 ? '其他支出' : '其他收入');
+  return tx.name || tx.symbol || '未命名证券';
+}
+
+function detailsFor(tx: Transaction): string[] {
+  const market = Market[(tx.market in Market ? tx.market : 'CASH') as MarketType];
+  const fee = tx.commission + tx.tax;
+  if (tx.tradeType === 'BUY' || tx.tradeType === 'SELL') {
+    return [`成交价 ${market.currencySymbol}${tx.price.toLocaleString(undefined, { maximumFractionDigits: 4 })}`, `${tx.quantity} ${tx.assetType === 'OPTION' ? '张' : '股'}`, ...(fee > 0 ? [`费用 ${market.currencySymbol}${fee.toFixed(2)}`] : [])];
+  }
+  if (tx.tradeType === 'DIVIDEND') return [`分红 ${market.currencySymbol}${(tx.price * tx.quantity).toFixed(2)}`, ...(tx.tax > 0 ? [`扣税 ${market.currencySymbol}${tx.tax.toFixed(2)}`] : [])];
+  if (tx.tradeType === 'FX_CONVERSION') return [tx.fxFromAmount != null && tx.fxFromCurrency ? `卖出 ${tx.fxFromAmount} ${tx.fxFromCurrency}` : '', tx.fxToAmount != null && tx.fxToCurrency ? `买入 ${tx.fxToAmount} ${tx.fxToCurrency}` : ''].filter(Boolean);
+  return [];
+}
+
+export function groupTransactionsByDate(transactions: Transaction[]): Array<[string, Transaction[]]> {
+  const groups = new Map<string, Transaction[]>();
+  transactions.forEach((tx) => groups.set(tx.tradeDate, [...(groups.get(tx.tradeDate) ?? []), tx]));
+  return [...groups.entries()].sort(([left], [right]) => right.localeCompare(left));
+}
+
+const WHEEL_ROW_HEIGHT = 42;
+const MIN_WHEEL_DATE = '2000-01-01';
+
+function parseIsoDate(value: string, fallback: string): Date {
+  const parsed = /^\d{4}-\d{2}-\d{2}$/.test(value) ? new Date(`${value}T00:00:00Z`) : new Date(`${fallback}T00:00:00Z`);
+  return Number.isNaN(parsed.getTime()) ? new Date(`${fallback}T00:00:00Z`) : parsed;
+}
+
+function isoDate(value: Date): string {
+  return value.toISOString().slice(0, 10);
+}
+
+function clampDate(value: Date, min: string, max: string): Date {
+  const minDate = parseIsoDate(min, min);
+  const maxDate = parseIsoDate(max, max);
+  return new Date(Math.min(Math.max(value.getTime(), minDate.getTime()), maxDate.getTime()));
+}
+
+function daysInMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month, 0)).getUTCDate();
+}
+
+function WheelColumn({ label, values, selected, onChange }: { label: (value: number) => string; values: number[]; selected: number; onChange: (value: number) => void }) {
+  const columnRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const index = Math.max(0, values.indexOf(selected));
+    if (columnRef.current) columnRef.current.scrollTop = index * WHEEL_ROW_HEIGHT;
+  }, [selected, values]);
+  return <div className="transactions-wheel-column" ref={columnRef} role="listbox" aria-label={label(selected)} onScroll={(event) => {
+    const target = event.currentTarget;
+    const index = Math.max(0, Math.min(values.length - 1, Math.round(target.scrollTop / WHEEL_ROW_HEIGHT)));
+    if (values[index] !== selected) onChange(values[index]);
+  }}>
+    <div className="transactions-wheel-spacer" />
+    {values.map((value) => <button type="button" role="option" aria-selected={value === selected} className={value === selected ? 'selected' : ''} key={value} onClick={() => onChange(value)}>{label(value)}</button>)}
+    <div className="transactions-wheel-spacer" />
+  </div>;
+}
+
+function WheelDateRangePicker({ startDate, endDate, activeSide, onSideChange, onChange }: { startDate: string; endDate: string; activeSide: 'start' | 'end'; onSideChange: (side: 'start' | 'end') => void; onChange: (side: 'start' | 'end', value: string) => void }) {
+  const today = new Date().toISOString().slice(0, 10);
+  const activeDate = clampDate(parseIsoDate(activeSide === 'start' ? startDate : endDate, today), MIN_WHEEL_DATE, today);
+  const years = Array.from({ length: new Date(`${today}T00:00:00Z`).getUTCFullYear() - 1999 }, (_, index) => 2000 + index);
+  const months = Array.from({ length: 12 }, (_, index) => index + 1).filter((month) => activeDate.getUTCFullYear() < new Date(`${today}T00:00:00Z`).getUTCFullYear() || month <= new Date(`${today}T00:00:00Z`).getUTCMonth() + 1);
+  const maxDay = activeDate.getUTCFullYear() === new Date(`${today}T00:00:00Z`).getUTCFullYear() && activeDate.getUTCMonth() + 1 === new Date(`${today}T00:00:00Z`).getUTCMonth() + 1 ? new Date(`${today}T00:00:00Z`).getUTCDate() : daysInMonth(activeDate.getUTCFullYear(), activeDate.getUTCMonth() + 1);
+  const days = Array.from({ length: maxDay }, (_, index) => index + 1);
+  const update = (part: 'year' | 'month' | 'day', value: number) => {
+    const year = part === 'year' ? value : activeDate.getUTCFullYear();
+    const month = part === 'month' ? value : activeDate.getUTCMonth() + 1;
+    const day = Math.min(part === 'day' ? value : activeDate.getUTCDate(), daysInMonth(year, month));
+    onChange(activeSide, isoDate(clampDate(new Date(Date.UTC(year, month - 1, day)), MIN_WHEEL_DATE, today)));
+  };
+  return <div className="transactions-wheel-picker">
+    <div className="transactions-wheel-pills"><button type="button" className={activeSide === 'start' ? 'selected' : ''} onClick={() => onSideChange('start')}>{startDate || '开始日期'}</button><span>—</span><button type="button" className={activeSide === 'end' ? 'selected' : ''} onClick={() => onSideChange('end')}>{endDate || '结束日期'}</button></div>
+    <div className="transactions-wheel-columns"><div className="transactions-wheel-selection-line" /><WheelColumn values={years} selected={activeDate.getUTCFullYear()} label={(value) => `${value}年`} onChange={(value) => update('year', value)} /><WheelColumn values={months} selected={activeDate.getUTCMonth() + 1} label={(value) => `${value}月`} onChange={(value) => update('month', value)} /><WheelColumn values={days} selected={activeDate.getUTCDate()} label={(value) => `${value}`} onChange={(value) => update('day', value)} /></div>
+  </div>;
+}
+
+export function LongPressButton({ className, children, onClick, onLongPress }: { className?: string; children: ReactNode; onClick: () => void; onLongPress: () => void }) {
+  const timer = useRef<number | undefined>(undefined);
+  const longPressed = useRef(false);
+  const suppressClick = useRef(false);
+  const clear = () => { if (timer.current !== undefined) window.clearTimeout(timer.current); timer.current = undefined; };
+  return <button type="button" className={className} onPointerDown={(event) => {
+    if (event.pointerType === 'mouse' && event.button !== 0) return;
+    longPressed.current = false;
+    clear();
+    timer.current = window.setTimeout(() => { longPressed.current = true; suppressClick.current = true; onLongPress(); }, 500);
+  }} onPointerMove={(event) => { if (Math.abs(event.movementX) > 8 || Math.abs(event.movementY) > 8) clear(); }} onPointerUp={() => { clear(); }} onPointerCancel={() => { clear(); }} onContextMenu={(event) => event.preventDefault()} onClick={(event) => {
+    if (suppressClick.current || longPressed.current) { event.preventDefault(); suppressClick.current = false; longPressed.current = false; return; }
+    onClick();
+  }}>{children}</button>;
+}
 
 export default function TransactionsPage() {
   const navigate = useNavigate();
+  const { activePlatform } = useAppShell();
+  const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) as number | undefined;
+  const ledgers = useLiveQuery(() => db.ledgers.toArray(), []) ?? [];
+  const liveTransactions = useLiveQuery(async () => {
+    const ledgerId = typeof activeLedgerId === 'number' ? activeLedgerId : 1;
+    const rows = ledgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(ledgerId).toArray();
+    return activePlatform ? rows.filter((row) => row.platform === activePlatform) : rows;
+  }, [activeLedgerId, activePlatform]);
+  const rawTransactions = liveTransactions ?? [];
 
-  // Settings & DB states
-  const [, setActiveLedgerId] = useState<number>(1);
-  const [transactions, setTransactions] = useState<Transaction[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  // Filter states
   const [searchTerm, setSearchTerm] = useState('');
-  const [typeFilter, setTypeFilter] = useState<string>('ALL');
-  const [marketFilter, setMarketFilter] = useState<string>('ALL');
-  const [platformFilter, setPlatformFilter] = useState<string>('ALL');
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
-  const [showAdvanced, setShowAdvanced] = useState(false);
-
-  // Collapsed months tracker
-  const [collapsedMonths, setCollapsedMonths] = useState<Record<string, boolean>>({});
-
-  // Batch action states
-  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [cashFilter, setCashFilter] = useState<CashFlowFilter>('ALL');
+  const [currencyFilter, setCurrencyFilter] = useState<CurrencyFilter>('ALL');
+  const [sceneFilter, setSceneFilter] = useState<SceneFilter>('ALL');
+  const [showDateSheet, setShowDateSheet] = useState(false);
+  const [showFilterSheet, setShowFilterSheet] = useState(false);
+  const [showBatchMode, setShowBatchMode] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
+  const [showMoveLedger, setShowMoveLedger] = useState(false);
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [pendingStart, setPendingStart] = useState('');
+  const [pendingEnd, setPendingEnd] = useState('');
+  const [pendingDateSide, setPendingDateSide] = useState<'start' | 'end'>('start');
+  const [pendingCash, setPendingCash] = useState<CashFlowFilter>('ALL');
+  const [pendingCurrency, setPendingCurrency] = useState<CurrencyFilter>('ALL');
+  const [pendingScene, setPendingScene] = useState<SceneFilter>('ALL');
 
-  // Fetch active ledger & search transactions
-  const loadTransactions = useCallback(async () => {
-    try {
-      const ledgerSetting = await settingRepo.get('default_ledger');
-      const currentLedgerId = typeof ledgerSetting === 'number' ? ledgerSetting : 1;
-      setActiveLedgerId(currentLedgerId);
+  const filtered = useMemo(() => rawTransactions.filter((tx) => {
+    const keyword = searchTerm.trim().toLowerCase();
+    if (keyword && ![tx.symbol, tx.name, tx.note].some((value) => value?.toLowerCase().includes(keyword))) return false;
+    if (startDate && tx.tradeDate < startDate) return false;
+    if (endDate && tx.tradeDate > endDate) return false;
+    const flow = cashFlow(tx);
+    if (cashFilter === 'INFLOW' && flow <= 0) return false;
+    if (cashFilter === 'OUTFLOW' && flow >= 0) return false;
+    if (currencyFilter !== 'ALL' && currencyFor(tx) !== currencyFilter) return false;
+    if (sceneFilter !== 'ALL' && sceneFor(tx) !== sceneFilter) return false;
+    return true;
+  }).sort((a, b) => `${b.tradeDate} ${b.tradeTime}`.localeCompare(`${a.tradeDate} ${a.tradeTime}`)), [rawTransactions, searchTerm, startDate, endDate, cashFilter, currencyFilter, sceneFilter]);
 
-      const data = await txnRepo.searchAndFilter({
-        ledgerId: currentLedgerId,
-        keyword: searchTerm.trim() || undefined,
-        market: marketFilter !== 'ALL' ? marketFilter : undefined,
-        platform: platformFilter !== 'ALL' ? platformFilter : undefined,
-        startDate: startDate || undefined,
-        endDate: endDate || undefined,
-      });
+  const sections = useMemo(() => groupTransactionsByDate(filtered), [filtered]);
 
-      // Secondary in-memory filter for tradeType
-      let filtered = data;
-      if (typeFilter !== 'ALL') {
-        filtered = data.filter(t => t.tradeType === typeFilter);
-      }
+  const hasFilters = cashFilter !== 'ALL' || currencyFilter !== 'ALL' || sceneFilter !== 'ALL' || Boolean(startDate || endDate);
+  const toggleSelection = (id: number) => setSelectedIds((current) => { const next = new Set(current); next.has(id) ? next.delete(id) : next.add(id); return next; });
+  const exitBatchMode = () => { setShowBatchMode(false); setSelectedIds(new Set()); };
+  const selectAll = () => setSelectedIds(selectedIds.size === filtered.length ? new Set() : new Set(filtered.map((tx) => tx.id).filter((id): id is number => typeof id === 'number')));
 
-      setTransactions(filtered);
-    } catch (err) {
-      console.error('加载交易流水失败:', err);
-    } finally {
-      setLoading(false);
-    }
-  }, [endDate, marketFilter, platformFilter, searchTerm, startDate, typeFilter]);
-
-  useEffect(() => {
-    void loadTransactions();
-  }, [loadTransactions]);
-
-  // Group transactions by month
-  const groupedTransactions = useMemo(() => {
-    const groups: Record<string, {
-      monthStr: string;
-      txs: Transaction[];
-      netCashFlow: number; // DEPOSIT - WITHDRAW + INTEREST + DIVIDEND
-      buysCount: number;
-      sellsCount: number;
-    }> = {};
-
-    transactions.forEach(tx => {
-      // Group key is YYYY-MM
-      const month = tx.tradeDate.substring(0, 7);
-      if (!groups[month]) {
-        groups[month] = {
-          monthStr: month,
-          txs: [],
-          netCashFlow: 0,
-          buysCount: 0,
-          sellsCount: 0
-        };
-      }
-
-      groups[month].txs.push(tx);
-
-      // Summarize stats
-      const amount = tx.price * tx.quantity;
-      if (tx.tradeType === 'DEPOSIT') {
-        groups[month].netCashFlow += amount;
-      } else if (tx.tradeType === 'WITHDRAW') {
-        groups[month].netCashFlow -= amount;
-      } else if (tx.tradeType === 'DIVIDEND') {
-        groups[month].netCashFlow += (amount - tx.tax);
-      } else if (tx.tradeType === 'INTEREST') {
-        groups[month].netCashFlow -= amount;
-      }
-
-      if (tx.tradeType === 'BUY') {
-        groups[month].buysCount++;
-      } else if (tx.tradeType === 'SELL') {
-        groups[month].sellsCount++;
-      }
-    });
-
-    return Object.values(groups).sort((a, b) => b.monthStr.localeCompare(a.monthStr));
-  }, [transactions]);
-
-  // Batch action handlers
-  const handleToggleSelect = (id: number) => {
-    const next = new Set(selectedIds);
-    if (next.has(id)) {
-      next.delete(id);
-    } else {
-      next.add(id);
-    }
-    setSelectedIds(next);
+  const applyDateRange = () => {
+    const normalized = pendingStart && pendingEnd && pendingStart > pendingEnd ? [pendingEnd, pendingStart] : [pendingStart, pendingEnd];
+    setStartDate(normalized[0]); setEndDate(normalized[1]); setShowDateSheet(false);
   };
+  const applyCategoryFilters = () => { setCashFilter(pendingCash); setCurrencyFilter(pendingCurrency); setSceneFilter(pendingScene); setShowFilterSheet(false); };
+  const deleteSelected = async () => { await Promise.all([...selectedIds].map((id) => txnRepo.delete(id))); setShowDeleteConfirm(false); exitBatchMode(); };
+  const moveSelected = useCallback(async (targetLedgerId: number) => {
+    await Promise.all([...selectedIds].map((id) => txnRepo.update(id, { ledgerId: targetLedgerId })));
+    setShowMoveLedger(false); exitBatchMode();
+  }, [selectedIds]);
 
-  const handleSelectAll = () => {
-    if (selectedIds.size === transactions.length) {
-      setSelectedIds(new Set());
-    } else {
-      setSelectedIds(new Set(transactions.map(t => t.id!).filter(Boolean)));
-    }
-  };
-
-  const handleBatchDelete = async (e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (selectedIds.size === 0) return;
-    const confirmDelete = window.confirm(`确认要批量删除已选择的 ${selectedIds.size} 笔交易记录吗？该操作不可撤销！`);
-    if (confirmDelete) {
-      try {
-        setLoading(true);
-        const idsArray = Array.from(selectedIds);
-        console.log('Executing batch delete for transaction IDs:', idsArray);
-        for (const id of idsArray) {
-          await txnRepo.delete(id);
-        }
-        setSelectedIds(new Set());
-        setIsBatchMode(false);
-        await loadTransactions();
-        alert('选中的交易记录已成功删除！');
-      } catch (err) {
-        console.error('批量删除失败:', err);
-        alert('删除失败，请重试');
-      } finally {
-        setLoading(false);
-      }
-    }
-  };
-
-  const toggleMonth = (month: string) => {
-    setCollapsedMonths(prev => ({
-      ...prev,
-      [month]: !prev[month]
-    }));
-  };
-
-  // Helper to format currency symbol
-  const getCurrencySymbol = (market: string) => {
-    switch (market) {
-      case 'US': return '$';
-      case 'HK': return 'HK$';
-      case 'A_SHARE': return '¥';
-      default: return '¥';
-    }
-  };
-
-  // Helper to resolve colors for trade types
-  const getTradeTypeStyle = (type: string) => {
-    switch (type) {
-      case 'BUY':
-      case 'DEPOSIT':
-      case 'TRANSFER_IN':
-        return { color: 'var(--color-success)', bg: 'var(--color-success-bg)' };
-      case 'SELL':
-      case 'WITHDRAW':
-      case 'TRANSFER_OUT':
-        return { color: 'var(--color-error)', bg: 'var(--color-error-bg)' };
-      case 'DIVIDEND':
-      case 'INTEREST':
-        return { color: 'var(--color-warning)', bg: 'var(--color-warning-bg)' };
-      default:
-        return { color: 'var(--color-info)', bg: 'var(--color-info-bg)' };
-    }
-  };
-
-  return (
-    <div style={{ padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem', position: 'relative' }}>
-      {/* Header */}
-      <div className="flex-between">
-        <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: 700 }}>交易历史</h1>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <button 
-            type="button"
-            onClick={() => {
-              setIsBatchMode(!isBatchMode);
-              setSelectedIds(new Set());
-            }}
-            style={{ 
-              padding: '0.5rem 0.85rem', 
-              fontSize: '0.85rem',
-              borderColor: isBatchMode ? 'var(--accent)' : 'var(--border-color)',
-              backgroundColor: isBatchMode ? 'rgba(59, 130, 246, 0.12)' : 'var(--bg-input)'
-            }}
-          >
-            {isBatchMode ? '取消选择' : '批量管理'}
-          </button>
-          <button type="button" className="primary" onClick={() => navigate('/transactions/new')} style={{ padding: '0.5rem 1rem' }}>
-            <Plus size={16} />
-            记一笔
-          </button>
-        </div>
-      </div>
-
-      {/* Search and Filters */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', gap: '0.5rem' }}>
-          <div style={{ position: 'relative', flex: 1 }}>
-            <input 
-              type="text" 
-              placeholder="搜索代码、名称或备注..." 
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              style={{ paddingLeft: '2.25rem' }}
-            />
-            <Search size={16} style={{ position: 'absolute', left: '0.85rem', top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-          </div>
-          <button 
-            onClick={() => setShowAdvanced(!showAdvanced)} 
-            style={{ 
-              padding: '0.65rem', 
-              borderColor: showAdvanced ? 'var(--accent)' : 'var(--border-color)' 
-            }}
-          >
-            <SlidersHorizontal size={18} />
-          </button>
-        </div>
-
-        {/* Dynamic type horizontal filter pills */}
-        <div style={{ overflowX: 'auto', display: 'flex', gap: '0.5rem', paddingBottom: '0.25rem' }}>
-          {['ALL', 'BUY', 'SELL', 'DEPOSIT', 'WITHDRAW', 'DIVIDEND', 'SPLIT', 'EXPIRE', 'FX_CONVERSION'].map((type) => (
-            <button 
-              key={type} 
-              onClick={() => setTypeFilter(type)}
-              style={{ 
-                padding: '0.4rem 0.8rem', 
-                fontSize: '0.8rem', 
-                borderRadius: '20px',
-                flexShrink: 0,
-                border: typeFilter === type ? '1px solid var(--accent)' : '1px solid var(--border-color)',
-                backgroundColor: typeFilter === type ? 'rgba(59, 130, 246, 0.15)' : 'var(--bg-input)',
-                color: typeFilter === type ? 'var(--accent)' : 'var(--text-primary)',
-              }}
-            >
-              {type === 'ALL' ? '全部类型' : TradeTypeLabels[type as TradeType] || type}
-            </button>
-          ))}
-        </div>
-
-        {/* Advanced Filters Panel */}
-        {showAdvanced && (
-          <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '0.25rem' }}>
-            <div className="grid-cols-2">
-              <div>
-                <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>交易市场</label>
-                <select value={marketFilter} onChange={(e) => setMarketFilter(e.target.value)}>
-                  <option value="ALL">全部市场</option>
-                  <option value="US">美股 (US)</option>
-                  <option value="HK">港股 (HK)</option>
-                  <option value="A_SHARE">A股 (A_SHARE)</option>
-                  <option value="CASH">现金 (CASH)</option>
-                </select>
-              </div>
-              <div>
-                <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>券商平台</label>
-                <select value={platformFilter} onChange={(e) => setPlatformFilter(e.target.value)}>
-                  <option value="ALL">全部平台</option>
-                  {Object.values(BrokerPlatform).map(p => (
-                    <option key={p.code} value={p.code}>{p.label}</option>
-                  ))}
-                </select>
-              </div>
-            </div>
-
-            <div className="grid-cols-2">
-              <div>
-                <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>起始日期</label>
-                <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
-              </div>
-              <div>
-                <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>结束日期</label>
-                <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
-              </div>
-            </div>
-
-            <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-              <button 
-                onClick={() => {
-                  setMarketFilter('ALL');
-                  setPlatformFilter('ALL');
-                  setStartDate('');
-                  setEndDate('');
-                }}
-                style={{ padding: '0.4rem 0.8rem', fontSize: '0.8rem' }}
-              >
-                重置筛选
-              </button>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Batch Select Actions Panel */}
-      {isBatchMode && transactions.length > 0 && (
-        <div className="flex-between glass-card" style={{ padding: '0.75rem 1rem', borderColor: 'var(--accent)' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', fontSize: '0.85rem' }}>
-            <button type="button" onClick={handleSelectAll} style={{ padding: '0.35rem', background: 'none', border: 'none' }}>
-              {selectedIds.size === transactions.length ? (
-                <CheckSquare size={18} style={{ color: 'var(--accent)' }} />
-              ) : (
-                <Square size={18} />
-              )}
-            </button>
-            <span>已选 {selectedIds.size} / {transactions.length} 项</span>
-          </div>
-          <button 
-            type="button"
-            className="danger" 
-            disabled={selectedIds.size === 0} 
-            onClick={handleBatchDelete}
-            style={{ padding: '0.4rem 0.85rem', fontSize: '0.85rem' }}
-          >
-            <Trash2 size={14} />
-            删除选中
-          </button>
-        </div>
-      )}
-
-      {/* Grouped Collapsible List */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', paddingBottom: '2rem' }}>
-        {loading ? (
-          <div style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)' }}>加载中...</div>
-        ) : groupedTransactions.length === 0 ? (
-          <div className="glass-card" style={{ textAlign: 'center', padding: '3rem 0', color: 'var(--text-muted)' }}>
-            没有符合条件的交易历史
-          </div>
-        ) : (
-          groupedTransactions.map((group) => {
-            const isCollapsed = !!collapsedMonths[group.monthStr];
-            return (
-              <div key={group.monthStr} style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-                
-                {/* Month Group Header */}
-                <div 
-                  className="glass-card flex-between" 
-                  onClick={() => toggleMonth(group.monthStr)}
-                  style={{ 
-                    padding: '0.65rem 1rem', 
-                    cursor: 'pointer', 
-                    backgroundColor: 'rgba(31, 41, 55, 0.4)',
-                    borderColor: 'rgba(255, 255, 255, 0.05)'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    {isCollapsed ? <ChevronRight size={18} /> : <ChevronDown size={18} />}
-                    <span style={{ fontWeight: 700, fontSize: '0.95rem' }}>{group.monthStr}</span>
-                    <span className="text-xs text-muted">({group.txs.length} 笔交易)</span>
-                  </div>
-                  
-                  {/* Month summary info */}
-                  <div style={{ display: 'flex', gap: '1rem', fontSize: '0.8rem' }}>
-                    {(group.buysCount > 0 || group.sellsCount > 0) && (
-                      <span className="text-muted">
-                        买入/卖出: {group.buysCount}/{group.sellsCount}
-                      </span>
-                    )}
-                    {group.netCashFlow !== 0 && (
-                      <span>
-                        净流: 
-                        <span className="font-mono font-bold" style={{ marginLeft: '0.2rem', color: group.netCashFlow >= 0 ? 'var(--color-success)' : 'var(--color-error)' }}>
-                          {group.netCashFlow >= 0 ? '+' : ''}
-                          {group.netCashFlow.toLocaleString(undefined, { maximumFractionDigits: 0 })}
-                        </span>
-                      </span>
-                    )}
-                  </div>
-                </div>
-
-                {/* Month Items (Collapsible) */}
-                {!isCollapsed && (
-                  <div style={{ display: 'flex', flexDirection: 'column', gap: '0.65rem' }}>
-                    {group.txs.map((tx) => {
-                      const isSelected = selectedIds.has(tx.id!);
-                      const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN';
-                      const isSell = tx.tradeType === 'SELL' || tx.tradeType === 'WITHDRAW' || tx.tradeType === 'TRANSFER_OUT';
-
-                      
-                      const style = getTradeTypeStyle(tx.tradeType);
-                      
-                      return (
-                        <div 
-                          key={tx.id} 
-                          className="glass-card" 
-                          style={{ 
-                            padding: '0.75rem 1rem', 
-                            display: 'flex',
-                            alignItems: 'center',
-                            gap: '0.75rem',
-                            borderColor: isSelected ? 'var(--accent)' : 'var(--border-color)',
-                            backgroundColor: isSelected ? 'rgba(59, 130, 246, 0.05)' : 'var(--bg-card)',
-                            cursor: 'pointer'
-                          }}
-                          onClick={() => {
-                            if (isBatchMode) {
-                              handleToggleSelect(tx.id!);
-                            } else {
-                              navigate(`/transactions/${tx.id}`);
-                            }
-                          }}
-                        >
-                          {/* Checkbox in Batch Mode */}
-                          {isBatchMode && (
-                            <div style={{ marginRight: '0.25rem' }}>
-                              {isSelected ? (
-                                <CheckSquare size={18} style={{ color: 'var(--accent)' }} />
-                              ) : (
-                                <Square size={18} style={{ color: 'var(--text-muted)' }} />
-                              )}
-                            </div>
-                          )}
-
-                          {/* Arrow Icon */}
-                          <div style={{ 
-                            background: style.bg,
-                            color: style.color,
-                            padding: '0.4rem',
-                            borderRadius: '50%',
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0
-                          }}>
-                            {isBuy ? (
-                              <ArrowDownLeft size={16} />
-                            ) : isSell ? (
-                              <ArrowUpRight size={16} />
-                            ) : (
-                              <Calendar size={16} />
-                            )}
-                          </div>
-
-                          {/* Description details */}
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', flexWrap: 'wrap' }}>
-                              <span style={{ fontWeight: 700, fontSize: '0.9rem' }}>{tx.symbol}</span>
-                              <span style={{ 
-                                fontSize: '0.7rem', 
-                                color: style.color, 
-                                backgroundColor: style.bg, 
-                                padding: '0.1rem 0.35rem', 
-                                borderRadius: '4px',
-                                fontWeight: 600
-                              }}>
-                                {TradeTypeLabels[tx.tradeType as TradeType] || tx.tradeType}
-                              </span>
-                              <span className="text-xs text-muted">({BrokerPlatform[tx.platform as PlatformType]?.label || tx.platform})</span>
-                            </div>
-                            <div className="text-xs text-muted" style={{ marginTop: '0.2rem', textOverflow: 'ellipsis', overflow: 'hidden', whiteSpace: 'nowrap' }}>
-                              {tx.name} {tx.note ? `• ${tx.note}` : ''}
-                            </div>
-                          </div>
-
-                          {/* Price & quantities or cash amount */}
-                          <div style={{ textAlign: 'right', flexShrink: 0 }}>
-                            <div style={{ 
-                              fontWeight: 700, 
-                              fontSize: '0.95rem',
-                              color: isBuy ? 'var(--color-success)' : isSell ? 'var(--color-error)' : 'var(--text-primary)' 
-                            }}>
-                              {isBuy ? '+' : isSell ? '-' : ''}
-                              {getCurrencySymbol(tx.market)}
-                              {(tx.price * tx.quantity).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                            </div>
-                            <div className="text-xs text-muted" style={{ marginTop: '0.2rem' }}>
-                              {tx.market === 'CASH' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'WITHDRAW' ? (
-                                <span>{tx.tradeDate}</span>
-                              ) : (
-                                <span>
-                                  {tx.quantity} 股 @ {getCurrencySymbol(tx.market)}{tx.price.toFixed(2)}
-                                </span>
-                              )}
-                            </div>
-                          </div>
-
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
+  return <div className="page tab-page transactions-page">
+    <div className="transactions-filter-bar">
+      {showBatchMode ? <div className="transactions-batch-header"><button type="button" className="transactions-filter-button" onClick={selectAll}>{selectedIds.size === filtered.length && filtered.length > 0 ? '取消全选' : '全选'}</button><span>已选 {selectedIds.size} 笔</span><button type="button" className="transactions-filter-button" onClick={exitBatchMode}>取消</button></div> : <>
+        <label className="transactions-search"><Search size={17} aria-hidden="true" /><input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="搜索证券名称或代码" /></label>
+        <button type="button" className={`transactions-filter-button ${startDate || endDate ? 'active' : ''}`} onClick={() => { setPendingStart(startDate); setPendingEnd(endDate); setPendingDateSide('start'); setShowDateSheet(true); }}><CalendarDays size={17} />日期</button>
+        <button type="button" className={`transactions-filter-button ${hasFilters && !(startDate || endDate) ? 'active' : ''}`} onClick={() => { setPendingCash(cashFilter); setPendingCurrency(currencyFilter); setPendingScene(sceneFilter); setShowFilterSheet(true); }}><Filter size={17} />筛选</button>
+      </>}
     </div>
-  );
+
+    <div className="transactions-list">
+      {liveTransactions === undefined ? <div className="transactions-empty">加载中...</div> : sections.length === 0 ? <div className="transactions-empty">当前条件下没有流水记录。</div> : sections.map(([date, items]) => <section className="transaction-date-section" key={date}>
+        <h2>{formatDateTitle(date)}</h2>
+        <div className="transaction-group-card">{items.map((tx) => {
+          const id = tx.id ?? 0;
+          const amount = cashFlow(tx);
+          const positive = amount > 0;
+          const negative = amount < 0;
+          const type = tradeType(tx);
+          const platform = (tx.platform in BrokerPlatform ? tx.platform : 'UNSPECIFIED') as PlatformType;
+          return <LongPressButton className={`transaction-row-card ${selectedIds.has(id) ? 'selected' : ''}`} key={id} onClick={() => showBatchMode ? toggleSelection(id) : navigate(`/transactions/${id}`)} onLongPress={() => { if (!showBatchMode) setShowBatchMode(true); toggleSelection(id); }}>
+            <span className="transaction-row-top"><PlatformMark platform={platform} className="transaction-platform-mark" /><span className={`transaction-type-badge ${positive ? 'positive' : negative ? 'negative' : 'neutral'}`}>{tx.assetType === 'OPTION' && (type === 'BUY' || type === 'SELL') ? `期权${TradeTypeLabels[type]}` : isIpo(tx) ? '新股' : TradeTypeLabels[type]}</span><span className="transaction-row-market">{Market[(tx.market in Market ? tx.market : 'CASH') as MarketType].label}</span><strong className={positive ? 'positive' : negative ? 'negative' : ''}>{type === 'FX_CONVERSION' ? '换汇' : type === 'SPLIT' ? '--' : formatAmount(amount, tx.market)}</strong></span>
+            <span className="transaction-row-meta"><span className="transaction-row-title">{titleFor(tx)}</span><span className="transaction-row-time">{tx.tradeTime?.slice(0, 5)}</span></span>
+            {detailsFor(tx).length > 0 && <span className="transaction-row-details">{detailsFor(tx).join(' · ')}</span>}
+            {showBatchMode && <span className={`transaction-checkbox ${selectedIds.has(id) ? 'checked' : ''}`}>{selectedIds.has(id) && <Check size={13} />}</span>}
+          </LongPressButton>;
+        })}</div>
+      </section>)}
+    </div>
+
+    {showBatchMode && selectedIds.size > 0 && <div className="transactions-batch-actions"><button type="button" className="danger" onClick={() => setShowDeleteConfirm(true)}><Trash2 size={16} />删除所选 ({selectedIds.size})</button><button type="button" onClick={() => setShowMoveLedger(true)}>变更账本</button></div>}
+
+    {showDateSheet && <div className="transactions-modal-backdrop" onClick={() => setShowDateSheet(false)}><div className="transactions-sheet" onClick={(event) => event.stopPropagation()}><div className="transactions-sheet-header"><h2>时间筛选</h2><button type="button" onClick={() => setShowDateSheet(false)}><X size={19} /></button></div><div className="transactions-sheet-scroll"><WheelDateRangePicker startDate={pendingStart} endDate={pendingEnd} activeSide={pendingDateSide} onSideChange={setPendingDateSide} onChange={(side, value) => { if (side === 'start') setPendingStart(value); else setPendingEnd(value); }} /></div><div className="transactions-sheet-actions"><button type="button" onClick={() => { setPendingStart(''); setPendingEnd(''); setStartDate(''); setEndDate(''); setShowDateSheet(false); }}>清空时间</button><button type="button" className="primary" onClick={applyDateRange}>确定</button></div></div></div>}
+    {showFilterSheet && <div className="transactions-modal-backdrop" onClick={() => setShowFilterSheet(false)}><div className="transactions-sheet" onClick={(event) => event.stopPropagation()}><div className="transactions-sheet-header"><h2>类型筛选</h2><button type="button" onClick={() => setShowFilterSheet(false)}><X size={19} /></button></div><div className="transactions-sheet-scroll"><FilterGroup label="资金流向" options={[['ALL', '全部'], ['INFLOW', '流入'], ['OUTFLOW', '流出']]} value={pendingCash} onChange={(value) => setPendingCash(value as CashFlowFilter)} /><FilterGroup label="币种" options={currencyOptions} value={pendingCurrency} onChange={(value) => setPendingCurrency(value as CurrencyFilter)} /><FilterGroup label="业务场景" options={sceneOptions} value={pendingScene} onChange={(value) => setPendingScene(value as SceneFilter)} /></div><div className="transactions-sheet-actions"><button type="button" onClick={() => { setPendingCash('ALL'); setPendingCurrency('ALL'); setPendingScene('ALL'); setCashFilter('ALL'); setCurrencyFilter('ALL'); setSceneFilter('ALL'); setShowFilterSheet(false); }}>清空筛选</button><button type="button" className="primary" onClick={applyCategoryFilters}>确定</button></div></div></div>}
+    {showMoveLedger && <div className="transactions-modal-backdrop" onClick={() => setShowMoveLedger(false)}><div className="transactions-sheet" onClick={(event) => event.stopPropagation()}><div className="transactions-sheet-header"><h2>迁移交易至账本</h2><button type="button" onClick={() => setShowMoveLedger(false)}><X size={19} /></button></div><p className="transactions-sheet-description">请选择要将选中的 {selectedIds.size} 笔交易记录迁移到哪个账本：</p><div className="transactions-ledger-options">{ledgers.map((ledger: Ledger) => <button type="button" key={ledger.id} disabled={ledger.id === activeLedgerId} className={ledger.id === activeLedgerId ? 'current' : ''} onClick={() => { const targetId = ledger.id; if (targetId != null) void moveSelected(targetId); }}><span><strong>{ledger.name}</strong><small>{ledger.type === 'JOINT' ? '合资' : '个人'}</small></span>{ledger.id === activeLedgerId && <small>当前账本</small>}</button>)}</div></div></div>}
+    {showDeleteConfirm && <div className="transactions-modal-backdrop" onClick={() => setShowDeleteConfirm(false)}><div className="transactions-confirm" onClick={(event) => event.stopPropagation()}><h2>批量删除</h2><p>确认删除选中的 {selectedIds.size} 笔记录？删除后无法恢复。</p><div className="transactions-sheet-actions"><button type="button" onClick={() => setShowDeleteConfirm(false)}>取消</button><button type="button" className="danger" onClick={() => void deleteSelected()}>删除</button></div></div></div>}
+  </div>;
+}
+
+function FilterGroup({ label, options, value, onChange }: { label: string; options: Array<[string, string]>; value: string; onChange: (value: string) => void }) {
+  return <div className="transactions-filter-group"><h3>{label}</h3><div className="transactions-filter-chips">{options.map(([key, text]) => <button type="button" key={key} className={value === key ? 'selected' : ''} onClick={() => onChange(key)}>{text}</button>)}</div></div>;
 }

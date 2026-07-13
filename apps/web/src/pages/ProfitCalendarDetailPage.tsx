@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
+import { useAppShell } from '../app/AppShell';
 import { PortfolioCalculator, ExchangeRates, convertToCny, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
 import { ArrowLeft, ChevronLeft, ChevronRight, Info, TrendingUp } from 'lucide-react';
 
@@ -18,6 +19,7 @@ const EMPTY_LIST: never[] = [];
 export default function ProfitCalendarDetailPage() {
   const { mode: urlMode, date: urlDate } = useParams();
   const navigate = useNavigate();
+  const { activePlatform } = useAppShell();
 
   const [mode, setMode] = useState<Mode>((urlMode as Mode) || 'MONTH');
   const [selectedDate, setSelectedDate] = useState<string>(urlDate || new Date().toISOString().split('T')[0]);
@@ -29,10 +31,10 @@ export default function ProfitCalendarDetailPage() {
     return typeof setting === 'number' ? setting : 1;
   }) ?? 1;
 
-  const rawTxns = useLiveQuery(() => 
-    db.transactions.where('ledgerId').equals(activeLedgerId).toArray(),
-    [activeLedgerId]
-  ) ?? EMPTY_LIST;
+  const rawTxns = useLiveQuery(async () => {
+    const ledgerTransactions = activeLedgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(activeLedgerId).toArray();
+    return activePlatform === null ? ledgerTransactions : ledgerTransactions.filter((transaction) => transaction.platform === activePlatform);
+  }, [activeLedgerId, activePlatform]) ?? EMPTY_LIST;
 
   const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY_LIST;
   const historicalBars = useLiveQuery(() => db.historicalDailyBars.toArray()) ?? EMPTY_LIST;

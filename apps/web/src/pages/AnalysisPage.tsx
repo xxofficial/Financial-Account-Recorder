@@ -1,373 +1,200 @@
-import { useState, useMemo } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { 
-  PieChart as PieIcon, TrendingUp, Calendar, Layers, 
-  Award, CalendarDays 
-} from 'lucide-react';
-import { AppTopActions } from '../app/AppShell';
+import { Area, AreaChart, Bar, BarChart, ResponsiveContainer, XAxis, YAxis } from 'recharts';
+import { ChevronDown, ChevronLeft, ChevronRight, Layers, PieChart as PieIcon } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
-import { PortfolioCalculator, ExchangeRates } from '../core/portfolio/portfolioCalculator';
-import { BrokerPlatform, PlatformType } from '../shared/models';
-import { 
-  AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer 
-} from 'recharts';
+import { useAppShell } from '../app/AppShell';
+import { ExchangeRates, PortfolioCalculator, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
+import { AnalysisPoint, AnalysisRange, buildAnalysisStats, formatSignedDisplayAmount, resolveAnalysisRange } from '../core/portfolio/analysisUtils';
+import { analysisComputationCache, createAnalysisDataVersion } from '../core/portfolio/analysisCache';
+import { BrokerPlatform, CurrencyType, DisplayCurrency, PlatformType } from '../shared/models';
 
 const calculator = new PortfolioCalculator();
-const defaultExchangeRates: ExchangeRates = {
-  usdToCny: 7.20,
-  hkdToCny: 0.92,
-};
+const rates: ExchangeRates = { usdToCny: 7.2, hkdToCny: 0.92 };
 const EMPTY_LIST: never[] = [];
-
-const CustomTooltip = ({ active, payload }: any) => {
-  if (active && payload && payload.length) {
-    return (
-      <div className="glass-card" style={{ padding: '0.5rem 0.75rem', border: '1px solid var(--accent)', fontSize: '0.8rem', backgroundColor: 'rgba(17, 24, 39, 0.95)' }}>
-        <div style={{ color: 'var(--text-secondary)', fontWeight: 500 }}>{payload[0].payload.fullDate}</div>
-        <div style={{ fontWeight: 700, marginTop: '0.25rem', color: 'var(--text-primary)' }}>
-          总资产: ¥{payload[0].value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-        </div>
-        {payload[1] && (
-          <div style={{ color: payload[1].value >= 0 ? 'var(--market-up)' : 'var(--market-down)', marginTop: '0.1rem', fontWeight: 600 }}>
-            持仓盈亏: ¥{payload[1].value.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </div>
-        )}
-      </div>
-    );
-  }
-  return null;
+const ranges: { value: AnalysisRange; label: string }[] = [
+  { value: 'ALL', label: '全部' }, { value: 'THIS_MONTH', label: '本月' }, { value: 'ONE_MONTH', label: '近1月' },
+  { value: 'SIX_MONTHS', label: '近6月' }, { value: 'THIS_YEAR', label: '今年' }, { value: 'CUSTOM', label: '自定义' },
+];
+type ChartMetric = 'RETURN' | 'ASSET' | 'TRADE_COUNT';
+type CalendarMode = 'DAY' | 'WEEK' | 'MONTH' | 'YEAR';
+type CalendarUnit = 'AMOUNT' | 'PERCENT';
+const dayMs = 86_400_000;
+const toDate = (value: string) => new Date(`${value}T00:00:00Z`);
+const toDateString = (value: Date) => value.toISOString().slice(0, 10);
+const formatDate = (value: string) => `${value.slice(5, 7)}/${value.slice(8, 10)}`;
+const formatRangeDate = (value: string) => `${Number(value.slice(0, 4))}/${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))}`;
+const displayAmount = (valueCny: number, cnyRate: number) => valueCny / cnyRate;
+const signed = (valueCny: number, displayCurrency: { symbol: string; cnyRate: number }) => formatSignedDisplayAmount(valueCny, displayCurrency.symbol, displayCurrency.cnyRate);
+const compactCalendarValue = (value: number, unit: CalendarUnit) => {
+  if (Math.abs(value) < .005) return unit === 'AMOUNT' ? '--' : '0%';
+  const sign = value >= 0 ? '+' : '-';
+  return unit === 'AMOUNT'
+    ? `${sign}${Math.abs(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}`
+    : `${sign}${Math.abs(value).toLocaleString('zh-CN', { maximumFractionDigits: 2 })}%`;
 };
+
+function MetricCard({ title, value, trend }: { title: string; value: string; trend?: number }) {
+  return <div className="analysis-metric-card"><span>{title}</span><strong className={trend === undefined ? '' : trend >= 0 ? 'profit' : 'loss'}>{value}</strong></div>;
+}
+
+function Segment<T extends string>({ options, value, onChange }: { options: { value: T; label: string }[]; value: T; onChange: (value: T) => void }) {
+  return <div className="analysis-segment">{options.map((option) => <button key={option.value} className={value === option.value ? 'active' : ''} onClick={() => onChange(option.value)}>{option.label}</button>)}</div>;
+}
+
+function AnalysisCurrencySelector({ currency, onSelect }: { currency: CurrencyType; onSelect: (currency: CurrencyType) => void }) {
+  const [open, setOpen] = useState(false);
+  return <div className="portfolio-currency-selector analysis-currency-selector">
+    <button className="portfolio-currency-button" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+      区间盈亏({currency})<ChevronDown size={18} strokeWidth={2.25} aria-hidden="true" />
+    </button>
+    {open && <div className="portfolio-currency-menu" role="menu">
+      {Object.values(DisplayCurrency).map((option) => <button key={option.code} role="menuitem" className={option.code === currency ? 'active' : ''} onClick={() => { onSelect(option.code); setOpen(false); }}>{option.label}（{option.code}）</button>)}
+    </div>}
+  </div>;
+}
 
 export default function AnalysisPage() {
-  const [timeRange, setTimeRange] = useState('1M');
   const navigate = useNavigate();
-
-  // Reactive queries
-  const activeLedgerId = useLiveQuery(async () => {
-    const setting = await db.appSettings.get('default_ledger');
-    return typeof setting === 'number' ? setting : 1;
-  }) ?? 1;
-
-  const transactions = useLiveQuery(() => 
-    activeLedgerId === 0 ? db.transactions.toArray() : db.transactions.where('ledgerId').equals(activeLedgerId).toArray(),
-    [activeLedgerId]
-  ) ?? EMPTY_LIST;
-
+  const { activePlatform } = useAppShell();
+  const [range, setRange] = useState<AnalysisRange>('THIS_MONTH');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  const [metric, setMetric] = useState<ChartMetric>('RETURN');
+  const [selectedDate, setSelectedDate] = useState('');
+  const [calendarMode, setCalendarMode] = useState<CalendarMode>('DAY');
+  const [calendarUnit, setCalendarUnit] = useState<CalendarUnit>('AMOUNT');
+  const [calendarOffset, setCalendarOffset] = useState(0);
+  const [showProfit, setShowProfit] = useState(true);
+  const [analysisPoints, setAnalysisPoints] = useState<AnalysisPoint[]>([]);
+  const [analysisLoading, setAnalysisLoading] = useState(true);
+  const [analysisError, setAnalysisError] = useState('');
+  const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) ?? 1;
+  const storedCurrency = useLiveQuery(async () => (await db.appSettings.get('display_currency'))?.value) ?? 'CNY';
+  const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
+  const transactions = useLiveQuery(async () => {
+    const rows = activeLedgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(activeLedgerId as number).toArray();
+    return activePlatform === null ? rows : rows.filter((transaction) => transaction.platform === activePlatform);
+  }, [activeLedgerId, activePlatform]) ?? EMPTY_LIST;
   const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY_LIST;
-  const historicalBars = useLiveQuery(() => db.historicalDailyBars.toArray()) ?? EMPTY_LIST;
+  const historicalBars = useLiveQuery(() => db.historicalBars.where('resolution').equals('1d').toArray()) ?? EMPTY_LIST;
 
-  // Generate historical net worth data points
-  const chartData = useMemo(() => {
-    if (transactions.length === 0) return [];
+  const analysisVersion = useMemo(() => createAnalysisDataVersion({ transactions, quotes, bars: historicalBars }), [historicalBars, quotes, transactions]);
+  const analysisCacheKey = `${activeLedgerId}:${activePlatform ?? 'ALL'}:${analysisVersion}`;
 
-    // Determine range in days
-    let rangeDays = 30;
-    if (timeRange === '3M') rangeDays = 90;
-    else if (timeRange === '1Y') rangeDays = 365;
-    else if (timeRange === 'ALL') {
-      // Find oldest transaction date
-      const oldestDateStr = transactions.reduce((oldest, tx) => 
-        tx.tradeDate < oldest ? tx.tradeDate : oldest, 
-        new Date().toISOString().split('T')[0]
-      );
-      const oldestDate = new Date(oldestDateStr + 'T00:00:00Z');
-      const todayDate = new Date();
-      const diffTime = Math.abs(todayDate.getTime() - oldestDate.getTime());
-      rangeDays = Math.max(7, Math.ceil(diffTime / (1000 * 60 * 60 * 24)));
-    }
+  useEffect(() => {
+    let subscribed = true;
+    setAnalysisLoading(true);
+    setAnalysisError('');
+    void analysisComputationCache.get(analysisCacheKey, { transactions, quotes, bars: historicalBars, rates })
+      .then((points) => { if (subscribed) { setAnalysisPoints(points); setAnalysisLoading(false); } })
+      .catch(() => { if (subscribed) { setAnalysisPoints([]); setAnalysisError('分析数据计算失败，请稍后重试。'); setAnalysisLoading(false); } });
+    return () => { subscribed = false; };
+  }, [analysisCacheKey, historicalBars, quotes, transactions]);
 
-    // We sample exactly 30 points to look clean and run fast
-    const pointsCount = 30;
-    const step = Math.max(1, Math.floor(rangeDays / pointsCount));
-    const data = [];
+  const allPoints = analysisPoints;
+  const latestDate = allPoints.at(-1)?.date ?? new Date().toISOString().slice(0, 10);
+  const firstDate = allPoints[0]?.date ?? latestDate;
+  const [rangeStart, rangeEnd] = resolveAnalysisRange(range, firstDate, latestDate, customStart, customEnd);
+  const rangePoints = useMemo(() => allPoints.filter((point) => point.date >= rangeStart && point.date <= rangeEnd), [allPoints, rangeEnd, rangeStart]);
+  const stats = useMemo(() => buildAnalysisStats(rangePoints), [rangePoints]);
+  const rangeTransactions = useMemo(() => transactions.filter((transaction) => transaction.tradeDate >= rangeStart && transaction.tradeDate <= rangeEnd && (transaction.tradeType === 'BUY' || transaction.tradeType === 'SELL')), [rangeEnd, rangeStart, transactions]);
+  const fees = useMemo(() => rangeTransactions.reduce((total, transaction) => ({ commission: total.commission + transaction.commission * (transaction.market === 'US' ? rates.usdToCny : transaction.market === 'HK' ? rates.hkdToCny : 1), tax: total.tax + transaction.tax * (transaction.market === 'US' ? rates.usdToCny : transaction.market === 'HK' ? rates.hkdToCny : 1) }), { commission: 0, tax: 0 }), [rangeTransactions]);
+  const selectedPoint = rangePoints.find((point) => point.date === selectedDate) ?? rangePoints.at(-1);
+  const chartData = rangePoints.map((point) => ({ ...point, label: formatDate(point.date), value: metric === 'RETURN' ? point.cumulativeReturnPercent : metric === 'ASSET' ? point.totalAssetsCny : point.dailyTradeCount }));
 
-    // Group historical bars by date and key: key is `${market}:${symbol}`
-    const barsByDateAndKey = new Map<string, Map<string, number>>();
-    historicalBars.forEach(bar => {
-      let dateMap = barsByDateAndKey.get(bar.date);
-      if (!dateMap) {
-        dateMap = new Map<string, number>();
-        barsByDateAndKey.set(bar.date, dateMap);
-      }
-      dateMap.set(`${bar.market}:${bar.symbol}`, bar.close);
+  const ranking = useMemo(() => {
+    const snapshot = calculator.calculate(transactions.filter((transaction) => transaction.tradeDate <= rangeEnd), quotes, rates);
+    return Object.values(snapshot.positions).map((position) => {
+      const quote = quotes.find((item) => item.symbol === position.symbol && item.market === position.market);
+      const multiplier = PortfolioSecurityRules.optionMultiplier(position.assetType, position.symbol);
+      const marketRate = position.market === 'US' ? rates.usdToCny : position.market === 'HK' ? rates.hkdToCny : 1;
+      const currentValue = position.quantity * (quote?.currentPrice ?? position.averageCost) * multiplier * marketRate;
+      return { ...position, profit: currentValue - position.remainingCost * marketRate + position.realizedProfit * marketRate };
+    }).filter((position) => showProfit ? position.profit > 0 : position.profit < 0).sort((left, right) => showProfit ? right.profit - left.profit : left.profit - right.profit).slice(0, 5);
+  }, [quotes, rangeEnd, showProfit, transactions]);
+
+  const allocations = useMemo(() => {
+    const snapshot = calculator.calculate(transactions, quotes, rates);
+    const values = { US: 0, HK: 0, A_SHARE: 0, CASH: Math.max(0, snapshot.cashBalanceCny) };
+    Object.values(snapshot.positions).forEach((position) => {
+      const quote = quotes.find((item) => item.symbol === position.symbol && item.market === position.market);
+      const value = position.quantity * (quote?.currentPrice ?? position.averageCost) * PortfolioSecurityRules.optionMultiplier(position.assetType, position.symbol) * (position.market === 'US' ? rates.usdToCny : position.market === 'HK' ? rates.hkdToCny : 1);
+      values[position.market] += Math.max(0, value);
     });
+    const marketRows = [{ name: '美股 US', value: values.US, color: '#3b82f6' }, { name: '港股 HK', value: values.HK, color: '#f59e0b' }, { name: 'A股 CN', value: values.A_SHARE, color: '#10b981' }, { name: '现金 CASH', value: values.CASH, color: '#06b6d4' }];
+    const marketTotal = marketRows.reduce((total, item) => total + item.value, 0);
+    const platforms = [...new Set(transactions.map((transaction) => transaction.platform))].map((platform) => ({ name: BrokerPlatform[platform as PlatformType]?.label ?? platform, value: calculator.calculate(transactions.filter((transaction) => transaction.platform === platform), quotes, rates).totalAssetsCny }));
+    const platformTotal = platforms.reduce((total, item) => total + item.value, 0);
+    return { markets: marketRows.map((item) => ({ ...item, percent: marketTotal ? item.value / marketTotal * 100 : 0 })).filter((item) => item.percent > .1), platforms: platforms.map((item) => ({ ...item, percent: platformTotal ? item.value / platformTotal * 100 : 0 })).filter((item) => item.percent > .1).sort((a, b) => b.percent - a.percent) };
+  }, [quotes, transactions]);
 
-    for (let i = pointsCount - 1; i >= 0; i--) {
-      const targetDate = new Date();
-      targetDate.setDate(targetDate.getDate() - (i * step));
-      const dateStr = targetDate.toISOString().split('T')[0];
+  const calendar = useMemo(() => buildCalendar(allPoints, latestDate, calendarMode, calendarOffset), [allPoints, calendarMode, calendarOffset, latestDate]);
+  const currency = displayCurrency.symbol;
+  const calendarValue = (point: AnalysisPoint) => compactCalendarValue(calendarUnit === 'AMOUNT' ? point.dailyProfitCny / displayCurrency.cnyRate : point.dailyReturnPercent, calendarUnit);
+  const setDisplayCurrency = (nextCurrency: CurrencyType) => void db.appSettings.put({ key: 'display_currency', value: nextCurrency, updatedAt: Date.now() });
 
-      // Filter transactions up to this date
-      const txsUpToDate = transactions.filter(t => t.tradeDate <= dateStr);
-      
-      // Synthesize quotes on this specific target date using historical daily close prices
-      const dateMap = barsByDateAndKey.get(dateStr);
-      const synthQuotes = quotes.map(q => {
-        const histPrice = dateMap?.get(`${q.market}:${q.symbol}`);
-        return {
-          ...q,
-          currentPrice: histPrice !== undefined && histPrice !== null ? histPrice : (q.currentPrice ?? 0),
-        };
-      });
+  return <div className="page tab-page analysis-page">
+    <Segment options={ranges} value={range} onChange={setRange} />
+    {range === 'CUSTOM' && <div className="analysis-custom-range"><input type="date" value={customStart || firstDate} min={firstDate} max={latestDate} onChange={(event) => setCustomStart(event.target.value)} /><span>至</span><input type="date" value={customEnd || latestDate} min={firstDate} max={latestDate} onChange={(event) => setCustomEnd(event.target.value)} /></div>}
+    <section className="analysis-summary"><AnalysisCurrencySelector currency={displayCurrency.code} onSelect={setDisplayCurrency} /><strong className={stats.totalProfitCny >= 0 ? 'profit' : 'loss'}>{signed(stats.totalProfitCny, displayCurrency)}</strong><span className={stats.returnPercent >= 0 ? 'profit' : 'loss'}>{stats.returnPercent >= 0 ? '+' : ''}{stats.returnPercent.toFixed(2)}%</span><small>{formatRangeDate(rangeStart)} – {formatRangeDate(rangeEnd)}</small></section>
+    {analysisLoading && transactions.length > 0 && <div className="analysis-loading" role="status">正在计算分析数据…</div>}
+    {analysisError && <div className="analysis-empty-state">{analysisError}</div>}
+    {!analysisLoading && !analysisError && transactions.length === 0 && <div className="analysis-empty-state">暂无交易数据，添加交易记录后将在这里生成分析结果。</div>}
+    <div className="analysis-metric-grid two"><MetricCard title="日均盈利" value={signed(stats.averageDailyProfitCny, displayCurrency)} trend={stats.averageDailyProfitCny} /><MetricCard title="胜率" value={`${stats.winRate.toFixed(1)}%`} /></div>
+    <div className="analysis-metric-grid three"><MetricCard title="佣金/平台费" value={`${currency}${(fees.commission / displayCurrency.cnyRate).toFixed(2)}`} /><MetricCard title="税费" value={`${currency}${(fees.tax / displayCurrency.cnyRate).toFixed(2)}`} /><MetricCard title="交易次数" value={`${rangeTransactions.length} 笔`} /></div>
+    <section className="analysis-chart-card"><Segment options={[{ value: 'RETURN', label: '收益率走势' }, { value: 'ASSET', label: '总资产趋势' }, { value: 'TRADE_COUNT', label: '交易次数' }]} value={metric} onChange={setMetric} /><div className="analysis-chart"><ResponsiveContainer width="100%" height="100%">{metric === 'TRADE_COUNT' ? <BarChart data={chartData} onClick={(event: any) => { const point = event?.activePayload?.[0]?.payload; if (point?.date) setSelectedDate(point.date); }}><XAxis dataKey="label" fontSize={10} tickLine={false} /><YAxis fontSize={10} tickLine={false} /><Bar dataKey="value" fill="#2563eb" radius={[4, 4, 0, 0]} /></BarChart> : <AreaChart data={chartData} onClick={(event: any) => { const point = event?.activePayload?.[0]?.payload; if (point?.date) setSelectedDate(point.date); }}><defs><linearGradient id="analysis-fill" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#2563eb" stopOpacity={.24} /><stop offset="95%" stopColor="#2563eb" stopOpacity={0} /></linearGradient></defs><XAxis dataKey="label" fontSize={10} tickLine={false} /><YAxis fontSize={10} tickLine={false} tickFormatter={(value) => metric === 'RETURN' ? `${value.toFixed(0)}%` : `${currency}${Math.round(value / displayCurrency.cnyRate)}`} /><Area type="monotone" dataKey="value" stroke="#2563eb" strokeWidth={2} fill="url(#analysis-fill)" /></AreaChart>}</ResponsiveContainer></div>{selectedPoint && <><div className="analysis-point-title">{selectedPoint.date}</div><div className="analysis-metric-grid two"><MetricCard title={metric === 'RETURN' ? '当天收益率' : metric === 'ASSET' ? '当天收益' : '买入/卖出'} value={metric === 'RETURN' ? `${selectedPoint.dailyReturnPercent.toFixed(2)}%` : metric === 'ASSET' ? signed(selectedPoint.dailyProfitCny, displayCurrency) : `${selectedPoint.dailyTradeCount} 笔`} trend={metric === 'RETURN' ? selectedPoint.dailyReturnPercent : selectedPoint.dailyProfitCny} /><MetricCard title={metric === 'RETURN' ? '累计收益率' : metric === 'ASSET' ? '累计收益' : '费用合计'} value={metric === 'RETURN' ? `${selectedPoint.cumulativeReturnPercent.toFixed(2)}%` : metric === 'ASSET' ? signed(selectedPoint.cumulativeProfitCny, displayCurrency) : `${currency}${((selectedPoint.dailyCommissionCny + selectedPoint.dailyTaxCny) / displayCurrency.cnyRate).toFixed(2)}`} trend={metric === 'RETURN' ? selectedPoint.cumulativeReturnPercent : selectedPoint.cumulativeProfitCny} /></div></>}</section>
+    <section className="analysis-calendar-card"><h2>收益日历（{calendarUnit === 'AMOUNT' ? displayCurrency.code : '%'}）</h2><div className="analysis-calendar-controls"><Segment options={[{ value: 'DAY', label: '日' }, { value: 'WEEK', label: '周' }, { value: 'MONTH', label: '月' }, { value: 'YEAR', label: '年' }]} value={calendarMode} onChange={(value) => { setCalendarMode(value); setCalendarOffset(0); }} /><Segment options={[{ value: 'AMOUNT', label: '￥' }, { value: 'PERCENT', label: '%' }]} value={calendarUnit} onChange={setCalendarUnit} /></div><div className="analysis-calendar-nav"><button aria-label="上一页" onClick={() => setCalendarOffset((value) => value - 1)}><ChevronLeft /></button><strong>{calendar.title}</strong><button aria-label="下一页" onClick={() => setCalendarOffset((value) => value + 1)}><ChevronRight /></button></div><CalendarGrid calendar={calendar} mode={calendarMode} renderValue={calendarValue} onOpen={(date) => navigate(`/analysis/calendar/${calendarMode}/${date}`)} /></section>
+    <section className="analysis-ranking-card"><h2>区间盈亏排行</h2><div className="analysis-chip-row"><button className={showProfit ? 'active' : ''} onClick={() => setShowProfit(true)}>盈利 Top5</button><button className={!showProfit ? 'active' : ''} onClick={() => setShowProfit(false)}>亏损 Top5</button></div>{ranking.length ? <div className="analysis-ranking-list">{ranking.map((item, index) => <button key={`${item.market}:${item.symbol}`} onClick={() => navigate(`/analysis/stock/${item.symbol}/${item.market}`)}><span>{index + 1}</span><span><strong>{item.name}</strong><small>{item.symbol} · {item.market}</small></span><b className={item.profit >= 0 ? 'profit' : 'loss'}>{signed(item.profit, displayCurrency)}</b><ChevronRight size={18} /></button>)}</div> : <p>{showProfit ? '当前区间内没有盈利的股票' : '当前区间内没有亏损的股票'}</p>}<button className="analysis-full-ranking" onClick={() => navigate('/analysis/ranking')}>查看完整排行 &gt;</button></section>
+    {activeLedgerId === 0 && <><section className="analysis-allocation-card"><h2><PieIcon size={17} />资产市场分布</h2><Allocation rows={allocations.markets} displayCurrency={displayCurrency} /></section><section className="analysis-allocation-card"><h2><Layers size={17} />券商平台分布</h2><Allocation rows={allocations.platforms} displayCurrency={displayCurrency} /></section></>}
+  </div>;
+}
 
-      const snap = calculator.calculate(txsUpToDate, synthQuotes, defaultExchangeRates);
-      
-      data.push({
-        date: dateStr.substring(5), // MM-DD
-        fullDate: dateStr,
-        '总资产': snap.totalAssetsCny,
-        '持仓盈亏': snap.unrealizedProfitCny,
-      });
-    }
+function Allocation({ rows, displayCurrency }: { rows: { name: string; value: number; percent: number; color?: string }[]; displayCurrency: { symbol: string; cnyRate: number } }) {
+  if (!rows.length) return <p className="analysis-empty">暂无资产分布数据</p>;
+  return <div className="analysis-allocation-list">{rows.map((row) => <div key={row.name}><div><span>{row.name}</span><b>{displayCurrency.symbol}{displayAmount(row.value, displayCurrency.cnyRate).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}（{row.percent.toFixed(1)}%）</b></div><i><em style={{ width: `${row.percent}%`, background: row.color ?? '#2563eb' }} /></i></div>)}</div>;
+}
 
-    return data;
-  }, [transactions, quotes, historicalBars, timeRange]);
-
-  // Compute allocations
-  const { marketAllocations, platformAllocations } = useMemo(() => {
-    const snap = calculator.calculate(transactions, quotes, defaultExchangeRates);
-    const totalAssets = snap.totalAssetsCny;
-
-    if (totalAssets <= 0) {
-      return { marketAllocations: [], platformAllocations: [] };
-    }
-
-    // 1. Market allocation breakdown
-    let usVal = 0;
-    let hkVal = 0;
-    let aShareVal = 0;
-    
-    Object.values(snap.positions).forEach(pos => {
-      const quote = quotes.find(q => q.symbol === pos.symbol && q.market === pos.market);
-      const currentPrice = quote?.currentPrice ?? pos.averageCost;
-      const mult = pos.assetType === 'OPTION' ? 100 : 1;
-      const valCny = pos.quantity * currentPrice * mult * (pos.market === 'US' ? defaultExchangeRates.usdToCny : pos.market === 'HK' ? defaultExchangeRates.hkdToCny : 1.0);
-      
-      if (pos.market === 'US') usVal += valCny;
-      else if (pos.market === 'HK') hkVal += valCny;
-      else if (pos.market === 'A_SHARE') aShareVal += valCny;
+function buildCalendar(points: AnalysisPoint[], latestDate: string, mode: CalendarMode, offset: number) {
+  const latest = toDate(latestDate);
+  if (mode === 'DAY') {
+    const month = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth() + offset, 1));
+    const start = new Date(month); start.setUTCDate(1 - start.getUTCDay());
+    const pointByDate = new Map(points.map((point) => [point.date, point]));
+    const cells = Array.from({ length: 42 }, (_, index) => {
+      const date = new Date(start.getTime() + index * dayMs);
+      const dateString = toDateString(date);
+      // TODO: replace this weekend approximation with an exchange-calendar
+      // source so public holidays and market-specific closures are exact.
+      const isWeekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
+      return { date: dateString, point: pointByDate.get(dateString), current: date.getUTCMonth() === month.getUTCMonth(), isWeekend };
     });
+    return { title: `${month.getUTCFullYear()}年${month.getUTCMonth() + 1}月`, cells };
+  }
+  if (mode === 'WEEK') {
+    const month = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth() + offset, 1));
+    const cells = Array.from({ length: 5 }, (_, index) => { const start = new Date(Date.UTC(month.getUTCFullYear(), month.getUTCMonth(), 1 + index * 7)); const end = new Date(Math.min(start.getTime() + 6 * dayMs, Date.UTC(month.getUTCFullYear(), month.getUTCMonth() + 1, 0))); const rows = points.filter((point) => point.date >= toDateString(start) && point.date <= toDateString(end)); return { date: toDateString(start), label: `${start.getUTCMonth() + 1}/${start.getUTCDate()} - ${end.getUTCMonth() + 1}/${end.getUTCDate()}`, point: aggregatePoints(rows) }; });
+    return { title: `${month.getUTCFullYear()}年${month.getUTCMonth() + 1}月`, cells };
+  }
+  if (mode === 'MONTH') { const year = latest.getUTCFullYear() + offset; return { title: `${year}年`, cells: Array.from({ length: 12 }, (_, index) => { const start = `${year}-${String(index + 1).padStart(2, '0')}-01`; return { date: start, label: `${index + 1}月`, point: aggregatePoints(points.filter((point) => point.date.startsWith(`${year}-${String(index + 1).padStart(2, '0')}`))) }; }) }; }
+  const endYear = latest.getUTCFullYear() + offset * 6; return { title: `${endYear - 5} - ${endYear}`, cells: Array.from({ length: 6 }, (_, index) => { const year = endYear - 5 + index; return { date: `${year}-01-01`, label: `${year}`, point: aggregatePoints(points.filter((point) => point.date.startsWith(String(year)))) }; }) };
+}
 
-    const cashVal = snap.cashBalanceCny;
+function aggregatePoints(points: AnalysisPoint[]): AnalysisPoint | undefined { if (!points.length) return undefined; const last = points.at(-1)!; return { ...last, dailyProfitCny: points.reduce((sum, point) => sum + point.dailyProfitCny, 0), dailyReturnPercent: points.reduce((sum, point) => sum + point.dailyReturnPercent, 0) }; }
 
-    const markets = [
-      { name: '美股 US', value: Math.max(0, usVal), color: '#3b82f6' },
-      { name: '港股 HK', value: Math.max(0, hkVal), color: '#f59e0b' },
-      { name: 'A股 CN', value: Math.max(0, aShareVal), color: '#10b981' },
-      { name: '现金 CASH', value: Math.max(0, cashVal), color: '#06b6d4' }
-    ];
-
-    const marketTotal = markets.reduce((sum, item) => sum + item.value, 0);
-    const marketAllocations = markets.map(m => ({
-      ...m,
-      percent: marketTotal > 0 ? (m.value / marketTotal) * 100 : 0
-    })).filter(m => m.percent > 0.1);
-
-    // 2. Broker Platform allocation breakdown
-    const platforms = Array.from(new Set(transactions.map(t => t.platform)));
-    const platformsRaw = platforms.map(p => {
-      const txs = transactions.filter(t => t.platform === p);
-      const platformSnap = calculator.calculate(txs, quotes, defaultExchangeRates);
-      return {
-        name: BrokerPlatform[p as PlatformType]?.label || p,
-        value: platformSnap.totalAssetsCny,
-      };
-    });
-
-    const platformTotal = platformsRaw.reduce((sum, item) => sum + item.value, 0);
-    const platformAllocations = platformsRaw.map(p => ({
-      ...p,
-      percent: platformTotal > 0 ? (p.value / platformTotal) * 100 : 0
-    })).filter(p => p.percent > 0.1)
-      .sort((a, b) => b.percent - a.percent);
-
-    return { marketAllocations, platformAllocations };
-  }, [transactions, quotes]);
-
-  return (
-    <div className="page">
-      {/* Header */}
-      <div className="screen-header"><div style={{ flex: 1 }}><h1 style={{ margin: 0, fontSize: '1.25rem', fontWeight: 700 }}>分析</h1><div className="text-xs text-muted">{activeLedgerId === 0 ? '账本汇总' : '当前账本'}</div></div><AppTopActions /></div>
-      <div className="range-selector">
-          {['1M', '3M', '1Y', 'ALL'].map((r) => (
-            <button
-              key={r}
-              onClick={() => setTimeRange(r)}
-              className={timeRange === r ? 'active' : ''}
-            >
-              {r}
-            </button>
-          ))}
-      </div>
-
-      {/* Analysis Tools Quick Access */}
-      <div className="grid-cols-2" style={{ gap: '0.75rem' }}>
-        <button 
-          onClick={() => navigate('/analysis/ranking')}
-          className="glass-card flex-between" 
-          style={{ 
-            padding: '0.75rem', 
-            cursor: 'pointer',
-            textAlign: 'left',
-            border: '1px solid rgba(255,255,255,0.06)',
-            background: 'rgba(255,255,255,0.02)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.75rem',
-            width: '100%'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-            <Award size={18} style={{ color: 'var(--accent)' }} />
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>盈亏排行榜</div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>查看个股表现排行</div>
-            </div>
-          </div>
-        </button>
-
-        <button 
-          onClick={() => navigate(`/analysis/calendar/MONTH/${new Date().toISOString().split('T')[0]}`)}
-          className="glass-card flex-between" 
-          style={{ 
-            padding: '0.75rem', 
-            cursor: 'pointer',
-            textAlign: 'left',
-            border: '1px solid rgba(255,255,255,0.06)',
-            background: 'rgba(255,255,255,0.02)',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '0.75rem',
-            width: '100%'
-          }}
-        >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', flex: 1 }}>
-            <CalendarDays size={18} style={{ color: 'var(--accent)' }} />
-            <div>
-              <div style={{ fontWeight: 600, fontSize: '0.85rem' }}>收益日历</div>
-              <div style={{ fontSize: '0.7rem', color: 'var(--text-muted)' }}>按日/周/月/年查看</div>
-            </div>
-          </div>
-        </button>
-      </div>
-
-      {/* Net Worth Chart */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div className="flex-between">
-          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-            <TrendingUp size={16} className="text-muted" />
-            <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>资产净值曲线</span>
-          </div>
-          <span className="text-xs text-muted" style={{ display: 'flex', alignItems: 'center', gap: '0.25rem' }}>
-            <Calendar size={12} />
-            {timeRange === '1M' ? '最近30天' : timeRange === '3M' ? '最近90天' : timeRange === '1Y' ? '最近1年' : '历史全部'}
-          </span>
-        </div>
-
-        {/* Recharts Area Chart */}
-        <div style={{ height: '180px', width: '100%', marginTop: '0.5rem' }}>
-          {chartData.length === 0 ? (
-            <div className="flex-center" style={{ height: '100%', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-              无足够的交易数据生成净值曲线
-            </div>
-          ) : (
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={chartData} margin={{ top: 5, right: 5, left: -25, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorAssets" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#3b82f6" stopOpacity={0.4}/>
-                    <stop offset="95%" stopColor="#3b82f6" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <XAxis dataKey="date" stroke="var(--text-muted)" fontSize={10} tickLine={false} />
-                <YAxis stroke="var(--text-muted)" fontSize={10} tickLine={false} tickFormatter={(val) => `¥${Math.round(val).toLocaleString()}`} />
-                <Tooltip content={<CustomTooltip />} />
-                <Area type="monotone" dataKey="总资产" stroke="#3b82f6" strokeWidth={2} fillOpacity={1} fill="url(#colorAssets)" />
-                <Area type="monotone" dataKey="持仓盈亏" stroke="#8b5cf6" strokeWidth={1} fill="none" />
-              </AreaChart>
-            </ResponsiveContainer>
-          )}
-        </div>
-
-      </div>
-
-      {/* Asset allocation is intentionally shown only in aggregate mode. */}
-      {activeLedgerId === 0 && <><div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <PieIcon size={16} className="text-muted" />
-          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>资产市场分布</span>
-        </div>
-
-        {/* Progress Bar Chart */}
-        {marketAllocations.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-            暂无资产分布数据
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', marginTop: '0.5rem' }}>
-            {/* Stacked Progress Bar */}
-            <div style={{ display: 'flex', height: '12px', width: '100%', borderRadius: '6px', overflow: 'hidden', backgroundColor: 'var(--bg-input)' }}>
-              {marketAllocations.map((item) => (
-                <div 
-                  key={item.name} 
-                  style={{ 
-                    width: `${item.percent}%`, 
-                    backgroundColor: item.color, 
-                    height: '100%' 
-                  }} 
-                />
-              ))}
-            </div>
-
-            {/* Allocation Legend */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
-              {marketAllocations.map((item) => (
-                <div key={item.name} className="flex-between text-sm">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-                    <div style={{ width: '8px', height: '8px', borderRadius: '50%', backgroundColor: item.color }} />
-                    <span>{item.name}</span>
-                  </div>
-                  <span style={{ fontWeight: 600 }}>
-                    ¥{item.value.toLocaleString(undefined, { maximumFractionDigits: 0 })} ({item.percent.toFixed(1)}%)
-                  </span>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Platform Allocation */}
-      <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
-          <Layers size={16} className="text-muted" />
-          <span style={{ fontWeight: 600, fontSize: '0.9rem' }}>券商平台分布</span>
-        </div>
-        
-        {platformAllocations.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '1rem 0', color: 'var(--text-muted)', fontSize: '0.8rem' }}>
-            暂无平台分布数据
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem', marginTop: '0.5rem' }}>
-            {platformAllocations.map((plat) => (
-              <div key={plat.name} style={{ display: 'flex', flexDirection: 'column', gap: '0.25rem' }}>
-                <div className="flex-between text-xs text-secondary">
-                  <span>{plat.name}</span>
-                  <span style={{ fontWeight: 600 }}>
-                    ¥{plat.value.toLocaleString(undefined, { maximumFractionDigits: 0 })} ({plat.percent.toFixed(1)}%)
-                  </span>
-                </div>
-                {/* Single Platform bar */}
-                <div style={{ height: '6px', width: '100%', borderRadius: '3px', backgroundColor: 'var(--bg-input)', overflow: 'hidden' }}>
-                  <div style={{ width: `${plat.percent}%`, height: '100%', background: 'var(--accent-gradient)', borderRadius: '3px' }} />
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div></>}
-    </div>
-  );
+function CalendarGrid({ calendar, mode, renderValue, onOpen }: { calendar: ReturnType<typeof buildCalendar>; mode: CalendarMode; renderValue: (point: AnalysisPoint) => string; onOpen: (date: string) => void }) {
+  return <div className={`analysis-calendar-grid ${mode.toLowerCase()}`}>
+    {mode === 'DAY' && ['日', '一', '二', '三', '四', '五', '六'].map((day) => <span className="weekday" key={day}>{day}</span>)}
+    {calendar.cells.map((cell: any) => {
+      if (mode === 'DAY' && !cell.current) return <span key={cell.date} className="analysis-calendar-empty" aria-hidden="true" />;
+      const hasValue = Boolean(cell.point && Math.abs(cell.point.dailyProfitCny) > .005);
+      const closed = mode === 'DAY' && cell.isWeekend && !hasValue;
+      const tone = hasValue ? cell.point.dailyProfitCny > 0 ? 'profit-cell' : 'loss-cell' : 'neutral-cell';
+      return <button key={cell.date} className={`${closed ? 'closed' : ''} ${tone}`} onClick={() => !closed && onOpen(cell.date)} disabled={closed}>
+        <small>{cell.label ?? (mode === 'DAY' ? Number(cell.date.slice(-2)) : '')}</small>
+        {closed ? <b className="closed-label">休市</b> : hasValue && <b className={cell.point.dailyProfitCny >= 0 ? 'profit' : 'loss'}>{renderValue(cell.point)}</b>}
+      </button>;
+    })}
+  </div>;
 }

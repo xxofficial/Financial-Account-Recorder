@@ -613,7 +613,7 @@ export default function SettingsPage() {
         </div>
       </form>
 
-      {isAndroid && <AndroidEmailSyncCard onSynced={async () => undefined} />}
+      {isAndroid && <AndroidEmailSyncCard />}
       <AppUpdateCard />
 
       <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>

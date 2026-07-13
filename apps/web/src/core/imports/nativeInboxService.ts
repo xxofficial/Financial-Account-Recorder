@@ -141,7 +141,14 @@ export async function importNativeInboxCandidate(
   item: NativeInboxItem,
   candidate: ParsedTradeCandidate,
 ): Promise<NativeInboxImportResult> {
-  return importParsedCandidate(candidate, `原生收件箱 ${item.id}：${item.source}`);
+  // Keep a candidate's own transaction reference (one mail can contain more
+  // than one confirmation), while scoping it to the native mailbox ID.
+  const payload = asObject(item.payload);
+  const mailboxId = typeof payload.mailboxId === 'string' ? payload.mailboxId : '';
+  return importParsedCandidate(
+    { ...candidate, externalReference: mailboxId ? `${mailboxId}:${candidate.externalReference}` : candidate.externalReference },
+    `原生收件箱 ${item.id}：${item.source}`,
+  );
 }
 
 /** Finalize an inbox message only after every candidate was reviewed. */

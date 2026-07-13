@@ -8,6 +8,26 @@ import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
 import { AndroidDefaultMarketProvider } from './androidDefaultMarketProvider';
 import { isAndroidNativeRuntime } from '../../platform/nativeRuntime';
+import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
+
+const MARKET_TIME_ZONES: Record<string, string> = { US: 'America/New_York', HK: 'Asia/Hong_Kong', A_SHARE: 'Asia/Shanghai' };
+
+function addUtcDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+/** Latest weekday that should have a daily close for this market. Exchange-holiday support remains a TODO. */
+export function latestExpectedDailyCloseDate(market: string, referenceAt = new Date()): string {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: MARKET_TIME_ZONES[market] ?? 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(referenceAt);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value;
+  let date = addUtcDays(`${part('year')}-${part('month')}-${part('day')}`, -1);
+  while ([0, 6].includes(new Date(`${date}T00:00:00Z`).getUTCDay())) date = addUtcDays(date, -1);
+  return date;
+}
 
 export class MarketDataCacheService {
   private providers: Record<string, MarketDataProvider> = {
@@ -260,15 +280,17 @@ export class MarketDataCacheService {
   /**
    * Schedule EOD daily close update tasks for all unique securities on application start/mount
    */
-  async triggerDailyCloseUpdate(): Promise<void> {
+  async triggerDailyCloseUpdate(referenceAt = new Date()): Promise<void> {
     try {
       const transactions = await db.transactions.toArray();
       if (transactions.length === 0) return;
 
+      const positions = new PortfolioCalculator().calculate(transactions, [], { usdToCny: 1, hkdToCny: 1 }).positions;
       const securitiesMap = new Map<string, { symbol: string; market: string; assetType: string }>();
       for (const tx of transactions) {
-        if (tx.symbol && tx.market) {
-          securitiesMap.set(`${tx.market}:${tx.symbol}`, {
+        const key = `${tx.market}:${tx.symbol}`;
+        if (tx.symbol && tx.market !== 'CASH' && Math.abs(positions[key]?.quantity ?? 0) > 1e-5) {
+          securitiesMap.set(key, {
             symbol: tx.symbol,
             market: tx.market,
             assetType: tx.assetType || 'STOCK'
@@ -276,20 +298,15 @@ export class MarketDataCacheService {
         }
       }
 
-      // Calculate latest closed trading day (yesterday or friday if weekend)
-      const d = new Date();
-      const day = d.getDay();
-      if (day === 0) { // Sunday -> Friday
-        d.setDate(d.getDate() - 2);
-      } else if (day === 1) { // Monday -> Friday
-        d.setDate(d.getDate() - 3);
-      } else {
-        d.setDate(d.getDate() - 1);
-      }
-      const latestDate = d.toISOString().split('T')[0];
-
       const newItems = [];
       for (const [key, sec] of securitiesMap.entries()) {
+        const latestDate = latestExpectedDailyCloseDate(sec.market, referenceAt);
+        const itemId = `daily_update_${sec.market}_${sec.symbol}_${latestDate}`;
+        const previous = await db.marketWorkItems.get(itemId);
+        // A provider-confirmed no_data result represents a holiday/closure
+        // until a proper exchange calendar is available. Do not retry it on
+        // every subsequent app open.
+        if (previous && ['success', 'no_data'].includes(previous.status)) continue;
         const hasBar = await db.historicalBars
           .where('[securityKey+resolution+tradeDate]')
           .equals([key, '1d', latestDate])
@@ -297,7 +314,7 @@ export class MarketDataCacheService {
 
         if (!hasBar) {
           newItems.push({
-            id: `daily_update_${sec.market}_${sec.symbol}_${latestDate}`,
+            id: itemId,
             kind: 'daily_close_update' as const,
             securityKey: key,
             symbol: sec.symbol,
@@ -317,7 +334,8 @@ export class MarketDataCacheService {
 
       if (newItems.length > 0) {
         await upsertMarketWorkItems(newItems);
-        // 不再自动启动执行器，等待用户在行情缓存管理页显式触发同步
+        // AppShell wakes the executor after its startup check. Keeping this
+        // method queue-only also lets event-specific callers reuse it.
       }
     } catch (err) {
       console.error('Failed to trigger EOD daily close updates:', err);

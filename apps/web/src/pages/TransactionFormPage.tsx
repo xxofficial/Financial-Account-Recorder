@@ -1,7 +1,9 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, Save, Trash2 } from 'lucide-react';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { TransactionRepository, AppSettingRepository } from '../db/repositories';
+import { db } from '../db/localDb';
 import { BrokerPlatform, TradeTypeLabels, PlatformType, MarketType, TradeType } from '../shared/models';
 import { transactionSchema } from '../shared/schemas';
 import { cacheService } from '../core/market/marketDataCacheService';
@@ -10,6 +12,7 @@ import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 
 const txnRepo = new TransactionRepository();
 const settingRepo = new AppSettingRepository();
+const configurablePlatforms = Object.values(BrokerPlatform).filter((platform) => platform.isConfigurable);
 
 export default function TransactionFormPage() {
   const navigate = useNavigate();
@@ -25,6 +28,11 @@ export default function TransactionFormPage() {
   const [market, setMarket] = useState<MarketType>('US');
   const [assetType, setAssetType] = useState<'STOCK' | 'OPTION'>('STOCK');
   const [platform, setPlatform] = useState<PlatformType>('LONGBRIDGE');
+  const enabledPlatformsValue = useLiveQuery(async () => (await db.appSettings.get('enabled_platforms'))?.value);
+  const enabledPlatforms = Array.isArray(enabledPlatformsValue)
+    ? configurablePlatforms.filter((candidate) => enabledPlatformsValue.includes(candidate.code))
+    : configurablePlatforms;
+  const selectablePlatforms = configurablePlatforms.filter((candidate) => enabledPlatforms.includes(candidate) || candidate.code === platform);
   const [symbol, setSymbol] = useState('');
   const [name, setName] = useState('');
   const [price, setPrice] = useState('');
@@ -33,6 +41,12 @@ export default function TransactionFormPage() {
   const [tax, setTax] = useState('0');
   const [tradeDate, setTradeDate] = useState(new Date().toISOString().split('T')[0]);
   const [tradeTime, setTradeTime] = useState('10:00:00');
+
+  useEffect(() => {
+    if (!isEdit && !enabledPlatforms.some((candidate) => candidate.code === platform)) {
+      setPlatform(enabledPlatforms[0]?.code ?? 'LONGBRIDGE');
+    }
+  }, [enabledPlatforms, isEdit, platform]);
   const [note, setNote] = useState('');
 
   // Option specific states
@@ -259,11 +273,11 @@ export default function TransactionFormPage() {
         await txnRepo.update(parseInt(id), payload);
       } else {
         await txnRepo.create(payload);
-        const autoSync = await settingRepo.get('auto_sync_after_transaction');
-        if (autoSync) {
-          await marketCacheManager.detectAndQueueMissingRanges();
-          await MarketTaskExecutor.startOrWakeMarketExecutor();
-        }
+      }
+      const autoSync = await settingRepo.get('auto_sync_after_transaction');
+      if (autoSync) {
+        await marketCacheManager.detectAndQueueMissingRanges();
+        await MarketTaskExecutor.startOrWakeMarketExecutor();
       }
       navigate('/transactions');
     } catch (err) {
@@ -333,7 +347,7 @@ export default function TransactionFormPage() {
             <div>
               <label className="text-xs text-muted" style={{ display: 'block', marginBottom: '0.35rem' }}>券商平台</label>
               <select value={platform} onChange={(e) => setPlatform(e.target.value as PlatformType)}>
-                {Object.values(BrokerPlatform).map(p => (
+                {selectablePlatforms.map(p => (
                   <option key={p.code} value={p.code}>{p.label}</option>
                 ))}
               </select>

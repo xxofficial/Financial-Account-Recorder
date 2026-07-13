@@ -2,6 +2,7 @@ import { useState, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
+import { useAppShell } from '../app/AppShell';
 import { PortfolioCalculator, ExchangeRates, convertToCny, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
 import { ArrowLeft, TrendingUp, TrendingDown, ArrowUpDown } from 'lucide-react';
 
@@ -14,6 +15,7 @@ const EMPTY_LIST: never[] = [];
 
 export default function FullRankingPage() {
   const navigate = useNavigate();
+  const { activePlatform } = useAppShell();
   const [range, setRange] = useState('ALL');
   const [showProfit, setShowProfit] = useState(true);
   const [sortAscending, setSortAscending] = useState(false);
@@ -24,10 +26,10 @@ export default function FullRankingPage() {
     return typeof setting === 'number' ? setting : 1;
   }) ?? 1;
 
-  const rawTxns = useLiveQuery(() => 
-    db.transactions.where('ledgerId').equals(activeLedgerId).toArray(),
-    [activeLedgerId]
-  ) ?? EMPTY_LIST;
+  const rawTxns = useLiveQuery(async () => {
+    const ledgerTransactions = activeLedgerId === 0 ? await db.transactions.toArray() : await db.transactions.where('ledgerId').equals(activeLedgerId).toArray();
+    return activePlatform === null ? ledgerTransactions : ledgerTransactions.filter((transaction) => transaction.platform === activePlatform);
+  }, [activeLedgerId, activePlatform]) ?? EMPTY_LIST;
 
   const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY_LIST;
 

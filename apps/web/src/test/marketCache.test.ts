@@ -409,6 +409,16 @@ describe('MarketCacheManager', () => {
     expect(items[0].requiredToDate).toBe('2026-07-12');
   });
 
+  it('does not queue an already provider-confirmed history range again on app open', async () => {
+    await db.transactions.add({ ledgerId: 1, tradeType: 'BUY', platform: 'SCHWAB', market: 'US', symbol: 'AAPL', name: 'Apple Inc.', tradeDate: '2026-07-01', tradeTime: '10:00:00', price: 180, quantity: 1, commission: 0, tax: 0, note: '', createdAt: Date.now(), updatedAt: Date.now(), investorName: null, assetType: 'STOCK', underlyingSymbol: null, expiryDate: null, strikePrice: null, optionType: null, fxFromCurrency: null, fxFromAmount: null, fxToCurrency: null, fxToAmount: null, fxRate: null, sourceChannel: null, externalReference: null } as any);
+    await db.historicalCoverage.add({ securityKey: 'US:AAPL', resolution: '1d', fromDate: '2026-07-01', toDate: '2026-07-12', providerId: 'test', coverageStatus: 'complete', updatedAt: Date.now() });
+
+    const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
+
+    expect(summary.queued).toBe(0);
+    expect(await db.marketWorkItems.where('kind').equals('historical_range_fill').count()).toBe(0);
+  });
+
   it('extends HK history through the market-local current date after the last transaction', async () => {
     await db.transactions.bulkAdd([
       { ledgerId: 1, tradeType: 'BUY', platform: 'MANUAL', market: 'HK', symbol: '7709', name: '7709', tradeDate: '2026-06-01', tradeTime: '10:00:00', price: 100, quantity: 10, commission: 0, tax: 0, createdAt: Date.now(), updatedAt: Date.now(), assetType: 'STOCK' } as any,

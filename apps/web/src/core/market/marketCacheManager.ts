@@ -145,6 +145,40 @@ function getHistoricalRangeRequestsFromTransactions(
   return requests;
 }
 
+function addUtcDays(date: string, days: number): string {
+  const value = new Date(`${date}T00:00:00Z`);
+  value.setUTCDate(value.getUTCDate() + days);
+  return value.toISOString().slice(0, 10);
+}
+
+/**
+ * Returns only the portions of a required range that are not already covered
+ * by a provider-confirmed successful request.  The coverage records are range
+ * based deliberately: a weekday-only bar comparison cannot distinguish an
+ * exchange holiday from an unfinished download.
+ */
+function subtractCoveredRanges(
+  fromDate: string,
+  toDate: string,
+  coverage: Array<{ fromDate: string; toDate: string }>,
+): Array<{ fromDate: string; toDate: string }> {
+  const result: Array<{ fromDate: string; toDate: string }> = [];
+  let cursor = fromDate;
+
+  for (const item of coverage) {
+    if (item.toDate < cursor || item.fromDate > toDate) continue;
+    if (item.fromDate > cursor) {
+      const end = addUtcDays(item.fromDate, -1);
+      if (cursor <= end) result.push({ fromDate: cursor, toDate: end });
+    }
+    if (item.toDate >= cursor) cursor = addUtcDays(item.toDate, 1);
+    if (cursor > toDate) break;
+  }
+
+  if (cursor <= toDate) result.push({ fromDate: cursor, toDate });
+  return result;
+}
+
 function isGzipFile(file: File): boolean {
   return file.name.toLowerCase().endsWith('.gz') || file.name.toLowerCase().endsWith('.json.gz');
 }
@@ -487,27 +521,38 @@ export class MarketCacheManager {
     const result: { securityKey: string; fromDate: string; toDate: string }[] = [];
 
     for (const req of requests) {
-      const id = `hist_fill_${req.market}_${req.symbol}_${req.fromDate}_${req.toDate}`;
-      newItems.push({
-        id,
-        kind: 'historical_range_fill',
-        securityKey: req.securityKey,
-        symbol: req.symbol,
-        market: req.market,
-        assetType: req.assetType,
-        resolution: RESOLUTION,
-        requiredFromDate: req.fromDate,
-        requiredToDate: req.toDate,
-        fetchFromDate: req.fromDate,
-        fetchToDate: req.toDate,
-        sourceReason: 'manual',
-        priority: 850,
-        status: 'pending',
-        attemptCount: 0,
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      result.push({ securityKey: req.securityKey, fromDate: req.fromDate, toDate: req.toDate });
+      // A successful historical request records the provider-confirmed range in
+      // historicalCoverage, including exchange holidays with no daily bar.  Do
+      // not infer a gap from weekday bars here: doing so makes every app launch
+      // re-request the same complete range (and repeatedly retries holidays).
+      const coverage = (await db.historicalCoverage.where('securityKey').equals(req.securityKey).toArray())
+        .filter((item) => item.resolution === RESOLUTION && item.coverageStatus === 'complete')
+        .sort((left, right) => left.fromDate.localeCompare(right.fromDate));
+      const uncovered = subtractCoveredRanges(req.fromDate, req.toDate, coverage.map((item) => ({ fromDate: item.fromDate, toDate: item.toDate })));
+
+      for (const missing of uncovered) {
+        const id = `hist_fill_${req.market}_${req.symbol}_${missing.fromDate}_${missing.toDate}`;
+        newItems.push({
+          id,
+          kind: 'historical_range_fill',
+          securityKey: req.securityKey,
+          symbol: req.symbol,
+          market: req.market,
+          assetType: req.assetType,
+          resolution: RESOLUTION,
+          requiredFromDate: missing.fromDate,
+          requiredToDate: missing.toDate,
+          fetchFromDate: missing.fromDate,
+          fetchToDate: missing.toDate,
+          sourceReason: 'manual',
+          priority: 850,
+          status: 'pending',
+          attemptCount: 0,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+        result.push({ securityKey: req.securityKey, fromDate: missing.fromDate, toDate: missing.toDate });
+      }
     }
 
     if (newItems.length > 0) {

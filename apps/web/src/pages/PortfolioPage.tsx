@@ -1,10 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Briefcase, ChevronRight, DollarSign } from 'lucide-react';
 import { useLiveQuery } from 'dexie-react-hooks';
+import { ChevronDown } from 'lucide-react';
 import { db } from '../db/localDb';
 import { PortfolioCalculator, ExchangeRates, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
-import { AppTopActions } from '../app/AppShell';
+import { CurrencyType, DisplayCurrency } from '../shared/models';
+import { useAppShell } from '../app/AppShell';
 
 const calculator = new PortfolioCalculator();
 const rates: ExchangeRates = { usdToCny: 7.2, hkdToCny: .92 };
@@ -12,29 +13,97 @@ const EMPTY: never[] = [];
 const money = (value: number) => value.toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 export default function PortfolioPage() {
-  const navigate = useNavigate(); const [refreshing, setRefreshing] = useState(false);
+  const navigate = useNavigate();
+  const { registerPortfolioRefresh, activePlatform } = useAppShell();
+  const [currencyOpen, setCurrencyOpen] = useState(false);
   const selectedLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value) ?? 1;
-  const ledger = useLiveQuery(() => selectedLedgerId === 0 ? undefined : db.ledgers.get(selectedLedgerId as number), [selectedLedgerId]);
-  const transactions = useLiveQuery(async () => selectedLedgerId === 0 ? db.transactions.toArray() : db.transactions.where('ledgerId').equals(selectedLedgerId as number).toArray(), [selectedLedgerId]) ?? EMPTY;
+  const transactions = useLiveQuery(async () => {
+    const ledgerTransactions = selectedLedgerId === 0
+      ? await db.transactions.toArray()
+      : await db.transactions.where('ledgerId').equals(selectedLedgerId as number).toArray();
+    return activePlatform === null ? ledgerTransactions : ledgerTransactions.filter((transaction) => transaction.platform === activePlatform);
+  }, [selectedLedgerId, activePlatform]) ?? EMPTY;
   const quotes = useLiveQuery(() => db.quoteSnapshots.toArray()) ?? EMPTY;
+  const storedCurrency = useLiveQuery(async () => (await db.appSettings.get('display_currency'))?.value) ?? 'CNY';
+  const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
   const snapshot = useMemo(() => calculator.calculate(transactions, quotes, rates), [transactions, quotes]);
   const holdings = useMemo(() => Object.values(snapshot.positions).filter((item) => Math.abs(item.quantity) > 1e-5), [snapshot]);
-  const refresh = async () => { if (!holdings.length || refreshing) return; setRefreshing(true); try { const { cacheService } = await import('../core/market/marketDataCacheService'); await cacheService.refreshQuotes(holdings.map((item) => ({ symbol: item.symbol, market: item.market, assetType: item.assetType })), true); } finally { setRefreshing(false); } };
-  const currency = (market: string) => market === 'US' ? '$' : market === 'HK' ? 'HK$' : '¥';
-  const pnlClass = (value: number) => value >= 0 ? 'market-up' : 'market-down';
-  return <div className="page">
-    <div className="screen-header"><div style={{ flex: 1, minWidth: 0 }}><h1>持仓</h1><div className="text-xs text-muted">{selectedLedgerId === 0 ? '账本汇总' : ledger?.name ?? '默认个人账本'}</div></div><AppTopActions onRefresh={() => void refresh()} refreshing={refreshing} /></div>
-    <section>
-      <div className="text-sm text-muted">总资产估值（CNY）</div>
-      <div style={{ fontSize: 30, lineHeight: '40px', fontWeight: 750, letterSpacing: -.5 }}>¥{money(snapshot.totalAssetsCny)}</div>
-      <div className={pnlClass(snapshot.dayProfitCny)} style={{ marginTop: 4, fontSize: 14, fontWeight: 700 }}>今日盈亏 {snapshot.dayProfitCny >= 0 ? '+' : ''}{money(snapshot.dayProfitCny)}（{snapshot.dayProfitCny >= 0 ? '+' : ''}{snapshot.dayProfitPercent.toFixed(2)}%）</div>
+  const refresh = useCallback(async () => {
+    if (!holdings.length) return;
+    const { cacheService } = await import('../core/market/marketDataCacheService');
+    await cacheService.refreshQuotes(holdings.map((item) => ({ symbol: item.symbol, market: item.market, assetType: item.assetType })), true);
+  }, [holdings]);
+  useEffect(() => {
+    registerPortfolioRefresh(refresh);
+    return () => registerPortfolioRefresh(undefined);
+  }, [refresh, registerPortfolioRefresh]);
+
+  const toDisplayCurrency = (valueCny: number) => valueCny / displayCurrency.cnyRate;
+  const cnyMoney = (valueCny: number) => `${displayCurrency.symbol}${money(toDisplayCurrency(valueCny))}`;
+  const signedCnyMoney = (valueCny: number) => `${valueCny >= 0 ? '+' : ''}${displayCurrency.symbol}${money(toDisplayCurrency(valueCny))}`;
+  const localCurrency = (market: string) => market === 'US' ? '$' : market === 'HK' ? 'HK$' : '¥';
+  const pnlClass = (value: number | null) => value === null ? 'portfolio-neutral' : value >= 0 ? 'market-up' : 'market-down';
+  const setDisplayCurrency = async (currency: CurrencyType) => {
+    await db.appSettings.put({ key: 'display_currency', value: currency, updatedAt: Date.now() });
+    setCurrencyOpen(false);
+  };
+
+  return <div className="page tab-page portfolio-page">
+    <section className="portfolio-summary">
+      <div className="portfolio-currency-selector">
+        <button className="portfolio-currency-button" onClick={() => setCurrencyOpen((open) => !open)} aria-expanded={currencyOpen}>
+          总资产（{displayCurrency.code}）<ChevronDown size={20} strokeWidth={2.5} aria-hidden="true" />
+        </button>
+        {currencyOpen && <div className="portfolio-currency-menu" role="menu">
+          {Object.values(DisplayCurrency).map((currency) => <button key={currency.code} role="menuitem" className={currency.code === displayCurrency.code ? 'active' : ''} onClick={() => void setDisplayCurrency(currency.code)}>{currency.label}（{currency.code}）</button>)}
+        </div>}
+      </div>
+      <div className="portfolio-total-assets">{cnyMoney(snapshot.totalAssetsCny)}</div>
+      <div className={pnlClass(snapshot.dayProfitCny)}>今日盈亏 {signedCnyMoney(snapshot.dayProfitCny)}（{snapshot.dayProfitCny >= 0 ? '+' : ''}{snapshot.dayProfitPercent.toFixed(2)}%）</div>
     </section>
-    <div className="metric-grid"><div className="metric"><div className="metric-label">可用现金</div><div className="metric-value">¥{money(snapshot.cashBalanceCny)}</div></div><div className="metric"><div className="metric-label">证券市值</div><div className="metric-value">¥{money(snapshot.holdingsValueCny)}</div></div><div className="metric"><div className="metric-label">累计持仓盈亏</div><div className={`metric-value ${pnlClass(snapshot.unrealizedProfitCny)}`}>{snapshot.unrealizedProfitCny >= 0 ? '+' : ''}{money(snapshot.unrealizedProfitCny)}</div></div><div className="metric"><div className="metric-label">持仓数量</div><div className="metric-value">{holdings.length} 个</div></div></div>
-    <section><div className="flex-between" style={{ margin: '4px 0 8px' }}><h2 className="section-title">持有明细</h2><span className="text-xs text-muted">{holdings.length} 个标的</span></div>
-      <div className="surface-list">{holdings.length === 0 ? <div className="text-sm text-muted" style={{ padding: '32px 16px', textAlign: 'center' }}>暂无持仓，点击底部“+”记一笔交易</div> : holdings.map((item) => {
-        const quote = quotes.find((q) => q.symbol === item.symbol && q.market === item.market); const price = quote?.currentPrice ?? item.averageCost; const multiplier = item.assetType === 'OPTION' ? 100 : 1; const value = item.quantity * price * multiplier; const cost = item.quantity * item.averageCost * multiplier; const pnl = value - cost; const symbol = PortfolioSecurityRules.attributionSymbol(item.symbol, item.assetType, item.underlyingSymbol);
-        return <button key={`${item.market}:${item.symbol}`} className="list-row" onClick={() => navigate(`/analysis/stock/${symbol}/${item.market}`)}><Briefcase size={20} /><span className="list-row-main"><span className="list-row-title">{item.name || item.symbol} <span className="text-xs text-muted">{item.symbol}</span></span><span className="list-row-desc">{item.quantity} {item.assetType === 'OPTION' ? '张' : '股'} · 成本 {currency(item.market)}{item.averageCost.toFixed(2)} · 现价 {currency(item.market)}{price.toFixed(2)}</span></span><span style={{ textAlign: 'right' }}><span style={{ display: 'block', fontWeight: 700 }}>{currency(item.market)}{money(value)}</span><span className={`text-xs ${pnlClass(pnl)}`}>{pnl >= 0 ? '+' : ''}{pnl.toFixed(2)}</span></span><ChevronRight size={16} className="text-muted" /></button>;
-      })}</div></section>
-    <div className="surface-card text-xs text-muted"><DollarSign size={15} style={{ verticalAlign: 'middle', marginRight: 6 }} />实时价格仅在右上角刷新时更新；历史行情补齐状态会在页面顶部提示。</div>
+
+    <section className="portfolio-metrics-card">
+      <div className="portfolio-metrics-row">
+        <Metric label="净入金" value={cnyMoney(snapshot.netInflowCny)} details={[`累计入金 ${cnyMoney(snapshot.totalDepositCny)}`, `累计出金 ${cnyMoney(snapshot.totalWithdrawCny)}`]} />
+        <Metric label="可用现金" value={cnyMoney(snapshot.cashBalanceCny)} details={['按当前汇率估算']} />
+      </div>
+      <div className="portfolio-metrics-row">
+        <Metric label="持仓浮盈" value={signedCnyMoney(snapshot.unrealizedProfitCny)} className={pnlClass(snapshot.unrealizedProfitCny)} details={[`${snapshot.unrealizedProfitPercent >= 0 ? '+' : ''}${snapshot.unrealizedProfitPercent.toFixed(2)}%`]} />
+        <Metric label="持仓总市值" value={cnyMoney(snapshot.holdingsValueCny)} details={['按现价估算']} />
+      </div>
+    </section>
+
+    <section className="portfolio-metrics-card portfolio-trade-stats">
+      <h2>交易统计</h2>
+      <div className="portfolio-metrics-row">
+        <Metric label="总手续费" value={cnyMoney(snapshot.totalCommissionCny + snapshot.totalTaxCny)} details={[`佣金 ${cnyMoney(snapshot.totalCommissionCny)}`, `税费 ${cnyMoney(snapshot.totalTaxCny)}`]} />
+        <Metric label="交易次数" value={`${snapshot.securityTradeCount} 次`} details={[`买入 ${snapshot.buyTradeCount}`, `卖出 ${snapshot.sellTradeCount}`]} />
+      </div>
+    </section>
+
+    <section className="portfolio-holdings-section">
+      <h2>持仓列表</h2>
+      <div className="portfolio-holdings-card">
+        {holdings.length === 0 ? <div className="portfolio-empty">当前范围内还没有持仓。</div> : holdings.map((item) => {
+          const quote = quotes.find((q) => q.symbol === item.symbol && q.market === item.market);
+          const hasQuote = quote?.currentPrice !== null && quote?.currentPrice !== undefined;
+          const price = quote?.currentPrice ?? item.averageCost;
+          const multiplier = item.assetType === 'OPTION' ? 100 : 1;
+          const totalProfit = (price - item.averageCost) * item.quantity * multiplier;
+          const totalProfitPercent = item.averageCost === 0 ? 0 : ((price - item.averageCost) / item.averageCost) * 100;
+          const dayProfit = quote?.change === null || quote?.change === undefined ? null : quote.change * item.quantity * multiplier;
+          const dayProfitPercent = quote?.changePercent ?? null;
+          const symbol = PortfolioSecurityRules.attributionSymbol(item.symbol, item.assetType, item.underlyingSymbol);
+          return <button key={`${item.market}:${item.symbol}`} className="portfolio-holding-row" onClick={() => navigate(`/analysis/stock/${symbol}/${item.market}`)}>
+            <span className="portfolio-holding-main"><span className="portfolio-holding-title">{item.name || item.symbol}{item.assetType === 'OPTION' && <span className="portfolio-option-badge">期权</span>}</span><span>{item.symbol} · {item.market === 'US' ? '美股' : item.market === 'HK' ? '港股' : item.market === 'A_SHARE' ? 'A股' : '现金'} · {item.quantity} {item.assetType === 'OPTION' ? '张' : '股'} · {localCurrency(item.market)}{item.averageCost.toFixed(2)}</span></span>
+            <span className="portfolio-holding-profit"><strong>{localCurrency(item.market)}{price.toFixed(2)}</strong><span className={pnlClass(dayProfit)}>当日 {dayProfit === null ? '—' : `${dayProfit >= 0 ? '+' : ''}${money(dayProfit)} (${dayProfitPercent === null ? '—' : `${dayProfitPercent >= 0 ? '+' : ''}${dayProfitPercent.toFixed(2)}%`})`}</span><span className={pnlClass(hasQuote ? totalProfit : null)}>持仓 {hasQuote ? `${totalProfit >= 0 ? '+' : ''}${money(totalProfit)} (${totalProfitPercent >= 0 ? '+' : ''}${totalProfitPercent.toFixed(2)}%)` : '—'}</span></span>
+          </button>;
+        })}
+      </div>
+    </section>
   </div>;
+}
+
+function Metric({ label, value, details, className }: { label: string; value: string; details: string[]; className?: string }) {
+  return <div className="portfolio-metric"><span>{label}</span><strong className={className}>{value}</strong><span className="portfolio-metric-details">{details.map((detail) => <small key={detail}>{detail}</small>)}</span></div>;
 }
