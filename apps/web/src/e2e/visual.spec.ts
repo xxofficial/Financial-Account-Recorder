@@ -88,7 +88,9 @@ for (const width of phoneWidths) {
     await expect(page.getByText('行情 API 与直连优先级配置')).toBeVisible();
     await expect(page).toHaveScreenshot(`settings-platform-advanced-${width}.png`, {
       animations: 'disabled',
-      maxDiffPixelRatio: 0.05,
+      // Chinese fallback fonts differ slightly between Windows and the
+      // Linux runner; retain this view while allowing glyph anti-aliasing.
+      maxDiffPixelRatio: 0.08,
     });
     await page.goto('/#/transactions');
     await expect(page.getByPlaceholder('搜索证券名称或代码')).toBeVisible();
