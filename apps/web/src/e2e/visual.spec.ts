@@ -46,7 +46,6 @@ for (const width of phoneWidths) {
     await expect(page.getByRole('heading', { name: '区间盈亏排行' })).toBeVisible();
     await expect(page).toHaveScreenshot(`analysis-${width}.png`, {
       animations: 'disabled',
-      fullPage: true,
       maxDiffPixelRatio: 0.05,
     });
     await page.goto('/#/data');
@@ -78,7 +77,6 @@ for (const width of phoneWidths) {
     await page.keyboard.press('Escape');
     await expect(page).toHaveScreenshot(`settings-${width}.png`, {
       animations: 'disabled',
-      fullPage: true,
       maxDiffPixelRatio: 0.05,
     });
     await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
@@ -90,7 +88,6 @@ for (const width of phoneWidths) {
     await expect(page.getByText('行情 API 与直连优先级配置')).toBeVisible();
     await expect(page).toHaveScreenshot(`settings-platform-advanced-${width}.png`, {
       animations: 'disabled',
-      fullPage: true,
       maxDiffPixelRatio: 0.05,
     });
     await page.goto('/#/transactions');
