@@ -232,7 +232,7 @@ export class HistoricalDailyBarRepository {
 }
 
 export class MarketProviderConfigRepository {
-  async get(provider: 'itick' | 'twelvedata' | 'marketdata'): Promise<MarketProviderConfig | undefined> {
+  async get(provider: MarketProviderConfig['provider']): Promise<MarketProviderConfig | undefined> {
     return db.marketProviderConfigs.get(provider);
   }
 
@@ -240,7 +240,7 @@ export class MarketProviderConfigRepository {
     return db.marketProviderConfigs.orderBy('priority').toArray();
   }
 
-  async update(provider: 'itick' | 'twelvedata' | 'marketdata', updates: Partial<Omit<MarketProviderConfig, 'provider' | 'createdAt'>>): Promise<number> {
+  async update(provider: MarketProviderConfig['provider'], updates: Partial<Omit<MarketProviderConfig, 'provider' | 'createdAt'>>): Promise<number> {
     return db.marketProviderConfigs.update(provider, {
       ...updates,
       updatedAt: Date.now(),

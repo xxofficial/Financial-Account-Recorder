@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { db } from '../db/localDb';
 import { getHistoricalRangeRequestsFromTransactions, marketCacheManager, MarketCacheImportReport } from '../core/market/marketCacheManager';
@@ -43,7 +43,14 @@ export default function MarketCachePage() {
   }) ?? 0;
 
   const requiredTransactions = useLiveQuery(() => db.transactions.toArray());
-  const requiredRanges = useMemo(() => getHistoricalRangeRequestsFromTransactions(requiredTransactions ?? []), [requiredTransactions]);
+  const [requiredRanges, setRequiredRanges] = useState<Awaited<ReturnType<typeof getHistoricalRangeRequestsFromTransactions>>>([]);
+  useEffect(() => {
+    let active = true;
+    void getHistoricalRangeRequestsFromTransactions(requiredTransactions ?? []).then((ranges) => {
+      if (active) setRequiredRanges(ranges);
+    });
+    return () => { active = false; };
+  }, [requiredTransactions]);
 
   const queueStats = (() => {
     const stats = {

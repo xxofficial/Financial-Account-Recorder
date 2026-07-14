@@ -1,14 +1,13 @@
 import { db } from '../../db/localDb';
 import { QuoteSnapshot, HistoricalDailyBar, HistoricalBar } from '../../db/schema';
-import { ItickProvider } from './itickProvider';
-import { TwelvedataProvider } from './twelvedataProvider';
+import { StockSdkProvider } from './stockSdkProvider';
 import { MarketDataAppProvider } from './marketDataProvider';
 import { MarketDataProvider } from './marketDataProvider';
 import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
 import { AndroidDefaultMarketProvider } from './androidDefaultMarketProvider';
-import { isAndroidNativeRuntime } from '../../platform/nativeRuntime';
 import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
+import { tradingCalendarService } from './tradingCalendarService';
 
 const MARKET_TIME_ZONES: Record<string, string> = { US: 'America/New_York', HK: 'Asia/Hong_Kong', A_SHARE: 'Asia/Shanghai' };
 
@@ -18,7 +17,7 @@ function addUtcDays(date: string, days: number): string {
   return value.toISOString().slice(0, 10);
 }
 
-/** Latest weekday that should have a daily close for this market. Exchange-holiday support remains a TODO. */
+/** Synchronous weekday fallback retained for callers that cannot await calendar I/O. */
 export function latestExpectedDailyCloseDate(market: string, referenceAt = new Date()): string {
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: MARKET_TIME_ZONES[market] ?? 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
@@ -29,11 +28,19 @@ export function latestExpectedDailyCloseDate(market: string, referenceAt = new D
   return date;
 }
 
+/** Uses the stock-sdk official A-share calendar; HK/US retain weekday fallback. */
+export async function resolveLatestExpectedDailyCloseDate(market: string, referenceAt = new Date()): Promise<string> {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: MARKET_TIME_ZONES[market] ?? 'UTC', year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(referenceAt);
+  const part = (type: Intl.DateTimeFormatPartTypes) => parts.find((item) => item.type === type)?.value;
+  return tradingCalendarService.previousExpectedCloseDate(market, `${part('year')}-${part('month')}-${part('day')}`);
+}
+
 export class MarketDataCacheService {
   private providers: Record<string, MarketDataProvider> = {
     'android-default': new AndroidDefaultMarketProvider(),
-    itick: new ItickProvider(),
-    twelvedata: new TwelvedataProvider(),
+    'stock-sdk': new StockSdkProvider(),
     marketdata: new MarketDataAppProvider(),
   };
 
@@ -49,10 +56,8 @@ export class MarketDataCacheService {
         provider: this.providers[c.provider],
         apiKey: c.apiKey
       }))
-      .filter(item => item.provider !== undefined && item.apiKey.trim() !== '');
-    return isAndroidNativeRuntime()
-      ? [{ provider: this.providers['android-default'], apiKey: '' }, ...configuredProviders]
-      : configuredProviders;
+      .filter(item => item.provider !== undefined && (item.apiKey.trim() !== '' || item.provider.name === 'stock-sdk' || item.provider.name === 'android-default'));
+    return configuredProviders;
   }
 
   /**
@@ -300,7 +305,7 @@ export class MarketDataCacheService {
 
       const newItems = [];
       for (const [key, sec] of securitiesMap.entries()) {
-        const latestDate = latestExpectedDailyCloseDate(sec.market, referenceAt);
+        const latestDate = await resolveLatestExpectedDailyCloseDate(sec.market, referenceAt);
         const itemId = `daily_update_${sec.market}_${sec.symbol}_${latestDate}`;
         const previous = await db.marketWorkItems.get(itemId);
         // A provider-confirmed no_data result represents a holiday/closure

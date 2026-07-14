@@ -63,29 +63,30 @@ function dateInNewYork(timestamp: number): string {
 }
 
 /**
- * Android-only, keyless default source. It retains the existing app's verified
- * Tencent → Sina stock path and Yahoo option path while the web keeps opt-in APIs.
+ * Android-only US individual-option source. Stock traffic is intentionally owned
+ * by stock-sdk so Tencent/Sina cannot become an implicit stock fallback.
  */
 export class AndroidDefaultMarketProvider implements MarketDataProvider {
   readonly name = 'android-default';
 
-  supportsAssetType(assetType: 'STOCK' | 'OPTION') { return assetType === 'STOCK' || assetType === 'OPTION'; }
-  supportsMarket(market: string) { return market === 'A_SHARE' || market === 'HK' || market === 'US'; }
+  supportsAssetType(assetType: 'STOCK' | 'OPTION') { return assetType === 'OPTION'; }
+  supportsMarket(market: string) { return market === 'US'; }
   async testConnection(): Promise<MarketDataResult<boolean>> {
+    void this.fetchStockQuotes;
+    void this.parseTencentHistory;
     return { ok: true, status: 'success', provider: this.name, data: true, message: 'Android 默认行情源已启用' };
   }
 
   async fetchQuotes(requests: SecurityRequest[]): Promise<MarketDataResult<QuoteSnapshot[]>> {
-    const stocks = requests.filter((item) => item.assetType === 'STOCK' && this.supportsMarket(item.market));
     const options = requests.filter((item) => item.assetType === 'OPTION' && item.market === 'US');
-    const [stockResult, optionResult] = await Promise.all([this.fetchStockQuotes(stocks), this.fetchYahooOptions(options)]);
-    const data = [...(stockResult.data ?? []), ...(optionResult.data ?? [])];
+    const optionResult = await this.fetchYahooOptions(options);
+    const data = optionResult.data ?? [];
     return {
       ok: data.length > 0 || requests.length === 0,
-      status: data.length > 0 ? 'success' : (stockResult.status === 'success' ? optionResult.status : stockResult.status),
+      status: data.length > 0 ? 'success' : optionResult.status,
       provider: this.name,
       data,
-      message: stockResult.message ?? optionResult.message,
+      message: optionResult.message,
     };
   }
 
@@ -217,14 +218,16 @@ export class AndroidDefaultMarketProvider implements MarketDataProvider {
   }
 
   async fetchHistoricalBars(symbol: string, market: string, assetType: 'STOCK' | 'OPTION', startDate: string, endDate: string): Promise<MarketDataResult<HistoricalDailyBar[]>> {
-    if (assetType === 'OPTION') return this.fetchYahooHistory(symbol, startDate, endDate);
-    if (!this.supportsMarket(market)) return { ok: true, status: 'skipped', provider: this.name, data: [] };
+    if (assetType === 'OPTION' && market === 'US') return this.fetchYahooHistory(symbol, startDate, endDate);
+    return { ok: true, status: 'skipped', provider: this.name, data: [] };
+    /* Legacy Tencent stock path intentionally unreachable. */
     const raw = symbol.split('.')[0];
-    const historyCode = market === 'A_SHARE' ? `${raw.startsWith('6') ? 'sh' : 'sz'}${raw}` : market === 'HK' ? `hk${raw.padStart(5, '0')}` : `us${raw.toUpperCase()}`;
+    const legacyMarket = market as string;
+    const historyCode = legacyMarket === 'A_SHARE' ? `${raw.startsWith('6') ? 'sh' : 'sz'}${raw}` : legacyMarket === 'HK' ? `hk${raw.padStart(5, '0')}` : `us${raw.toUpperCase()}`;
     return requestWithLogging<HistoricalDailyBar[]>(
       'tencent', 'history', symbol, market, assetType, 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get', 15_000,
       async () => {
-        const endpoint = market === 'HK' ? 'https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get' : 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
+        const endpoint = legacyMarket === 'HK' ? 'https://web.ifzq.gtimg.cn/appstock/app/hkfqkline/get' : 'https://web.ifzq.gtimg.cn/appstock/app/fqkline/get';
         const response = await nativeMarketFetch(`${endpoint}?param=${historyCode},day,,,${TENCENT_HISTORY_MAX_ROWS},qfq`, { headers: REQUEST_HEADERS });
         return { response, parseData: async (resp) => this.parseTencentHistory(await resp.json(), symbol, market, assetType, startDate, endDate) };
       },
@@ -285,7 +288,8 @@ export class AndroidDefaultMarketProvider implements MarketDataProvider {
             const payload = (await resp.text()).split('="')[1]?.replace(/"\s*;?\s*$/, '') ?? '';
             const row = payload.split(';').map((item) => item.split(',')).find((fields) => {
               const type = fields[1];
-              return (market === 'A_SHARE' && (type === '11' || type === '12')) || (market === 'HK' && type === '31') || (market === 'US' && type === '41');
+              const legacyMarket = market as string;
+              return (legacyMarket === 'A_SHARE' && (type === '11' || type === '12')) || (legacyMarket === 'HK' && type === '31') || (legacyMarket === 'US' && type === '41');
             });
             if (!row) return null;
             return { symbol: market === 'US' ? row[2].toUpperCase() : row[2], name: row[4] || row[2], market, assetType: 'STOCK' as const };

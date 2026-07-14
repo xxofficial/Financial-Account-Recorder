@@ -10,6 +10,7 @@ import { AnalysisPoint, AnalysisRange, buildAnalysisStats, formatSignedDisplayAm
 import { analysisComputationCache, createAnalysisDataVersion } from '../core/portfolio/analysisCache';
 import { analysisRates, analysisRuntimeCache, readAnalysisInput, type AnalysisScope } from '../core/portfolio/analysisRuntime';
 import { BrokerPlatform, CurrencyType, DisplayCurrency, PlatformType } from '../shared/models';
+import { tradingCalendarService } from '../core/market/tradingCalendarService';
 
 const calculator = new PortfolioCalculator();
 const rates = analysisRates;
@@ -71,6 +72,7 @@ export default function AnalysisPage() {
   const [analysisPoints, setAnalysisPoints] = useState<AnalysisPoint[]>([]);
   const [analysisLoading, setAnalysisLoading] = useState(true);
   const [analysisError, setAnalysisError] = useState('');
+  const [closedCalendarDates, setClosedCalendarDates] = useState<Set<string>>(new Set());
   const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) ?? 1;
   const storedCurrency = useLiveQuery(async () => (await db.appSettings.get('display_currency'))?.value) ?? 'CNY';
   const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
@@ -148,7 +150,17 @@ export default function AnalysisPage() {
     return { markets: marketRows.map((item) => ({ ...item, percent: marketTotal ? item.value / marketTotal * 100 : 0 })).filter((item) => item.percent > .1), platforms: platforms.map((item) => ({ ...item, percent: platformTotal ? item.value / platformTotal * 100 : 0 })).filter((item) => item.percent > .1).sort((a, b) => b.percent - a.percent) };
   }, [quotes, transactions]);
 
-  const calendar = useMemo(() => buildCalendar(allPoints, latestDate, calendarMode, calendarOffset), [allPoints, calendarMode, calendarOffset, latestDate]);
+  const calendar = useMemo(() => buildCalendar(allPoints, latestDate, calendarMode, calendarOffset, closedCalendarDates), [allPoints, calendarMode, calendarOffset, closedCalendarDates, latestDate]);
+  useEffect(() => {
+    if (calendarMode !== 'DAY') return;
+    const dates = calendar.cells.map((cell) => cell.date);
+    const markets = transactions.map((transaction) => transaction.market);
+    let active = true;
+    void tradingCalendarService.closedDatesForMarkets(markets, dates).then((dates) => {
+      if (active) setClosedCalendarDates(dates);
+    });
+    return () => { active = false; };
+  }, [calendarMode, calendarOffset, latestDate, transactions]);
   const currency = displayCurrency.symbol;
   const calendarValue = (point: AnalysisPoint) => compactCalendarValue(calendarUnit === 'AMOUNT' ? point.dailyProfitCny / displayCurrency.cnyRate : point.dailyReturnPercent, calendarUnit);
   const setDisplayCurrency = (nextCurrency: CurrencyType) => void db.appSettings.put({ key: 'display_currency', value: nextCurrency, updatedAt: Date.now() });
@@ -179,7 +191,7 @@ function Allocation({ rows, displayCurrency }: { rows: { name: string; value: nu
   return <div className="analysis-allocation-list">{rows.map((row) => <div key={row.name}><div><span>{row.name}</span><b>{displayCurrency.symbol}{displayAmount(row.value, displayCurrency.cnyRate).toLocaleString('zh-CN', { maximumFractionDigits: 0 })}（{row.percent.toFixed(1)}%）</b></div><i><em style={{ width: `${row.percent}%`, background: row.color ?? '#2563eb' }} /></i></div>)}</div>;
 }
 
-function buildCalendar(points: AnalysisPoint[], latestDate: string, mode: CalendarMode, offset: number) {
+function buildCalendar(points: AnalysisPoint[], latestDate: string, mode: CalendarMode, offset: number, closedDates: Set<string> = new Set()) {
   const latest = toDate(latestDate);
   if (mode === 'DAY') {
     const month = new Date(Date.UTC(latest.getUTCFullYear(), latest.getUTCMonth() + offset, 1));
@@ -188,10 +200,7 @@ function buildCalendar(points: AnalysisPoint[], latestDate: string, mode: Calend
     const cells = Array.from({ length: 42 }, (_, index) => {
       const date = new Date(start.getTime() + index * dayMs);
       const dateString = toDateString(date);
-      // TODO: replace this weekend approximation with an exchange-calendar
-      // source so public holidays and market-specific closures are exact.
-      const isWeekend = date.getUTCDay() === 0 || date.getUTCDay() === 6;
-      return { date: dateString, point: pointByDate.get(dateString), current: date.getUTCMonth() === month.getUTCMonth(), isWeekend };
+      return { date: dateString, point: pointByDate.get(dateString), current: date.getUTCMonth() === month.getUTCMonth(), isWeekend: closedDates.has(dateString) };
     });
     return { title: `${month.getUTCFullYear()}年${month.getUTCMonth() + 1}月`, cells };
   }

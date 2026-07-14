@@ -163,11 +163,11 @@ describe('Backup and Restore Service', () => {
 
   it('does not export provider keys or unrelated sensitive settings', async () => {
     await db.marketProviderConfigs.put({
-      provider: 'itick',
+      provider: 'stock-sdk',
       enabled: 1,
       priority: 1,
       apiKey: 'very-secret-market-key',
-      baseUrl: 'https://api.itick.org',
+      baseUrl: 'stock-sdk',
       optionsJson: '{}',
       createdAt: Date.now(),
       updatedAt: Date.now(),

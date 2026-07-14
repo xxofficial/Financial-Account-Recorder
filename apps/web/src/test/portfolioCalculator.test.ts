@@ -319,7 +319,7 @@ describe('Portfolio Calculator & Rules', () => {
         change: 3,
         changePercent: 2.94,
         currency: 'USD',
-        provider: 'itick',
+        provider: 'stock-sdk',
         fetchedAt: Date.now()
       }];
 
