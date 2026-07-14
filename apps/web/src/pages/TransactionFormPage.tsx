@@ -6,7 +6,7 @@ import { TransactionRepository, AppSettingRepository } from '../db/repositories'
 import { db } from '../db/localDb';
 import { BrokerPlatform, DisplayCurrency, Market, TradeTypeLabels, isSecurityTrade, type CurrencyType, type MarketType, type PlatformType, type TradeType } from '../shared/models';
 import { transactionSchema } from '../shared/schemas';
-import { cacheService } from '../core/market/marketDataCacheService';
+import { cacheService, rankSecuritySuggestions, type SecuritySuggestion } from '../core/market/marketDataCacheService';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import { PlatformMark, useAppShell } from '../app/AppShell';
@@ -85,6 +85,63 @@ function FieldBlock({
   </label>;
 }
 
+function SecurityAutocompleteField({
+  label,
+  value,
+  onChange,
+  suggestions,
+  onSelect,
+  supportingText,
+  optionUnderlying = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  suggestions: SecuritySuggestion[];
+  onSelect: (suggestion: SecuritySuggestion) => void;
+  supportingText?: string;
+  optionUnderlying?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => setActiveIndex(0), [value, suggestions.length]);
+  const select = (suggestion: SecuritySuggestion) => { onSelect(suggestion); setOpen(false); };
+  return <div className="trade-security-autocomplete">
+    <label className="trade-form-field">
+      <span className="trade-form-label">{label}</span>
+      <span className="trade-form-input-wrap">
+        <input
+          value={value}
+          placeholder={optionUnderlying ? '输入正股代码或名称' : '输入证券代码或名称'}
+          required
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open && suggestions.length > 0}
+          aria-controls="security-suggestion-list"
+          aria-activedescendant={open && suggestions[activeIndex] ? `security-suggestion-${suggestions[activeIndex].market}-${suggestions[activeIndex].symbol}` : undefined}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => { onChange(event.target.value); setOpen(true); }}
+          onBlur={() => setOpen(false)}
+          onKeyDown={(event) => {
+            if (!suggestions.length) return;
+            if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true); setActiveIndex((index) => Math.min(suggestions.length - 1, index + 1)); }
+            else if (event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); setActiveIndex((index) => Math.max(0, index - 1)); }
+            else if (event.key === 'Enter' && open && suggestions[activeIndex]) { event.preventDefault(); select(suggestions[activeIndex]); }
+            else if (event.key === 'Escape') { event.preventDefault(); setOpen(false); }
+          }}
+        />
+      </span>
+      {supportingText && <small className="trade-form-supporting">{supportingText}</small>}
+    </label>
+    {open && value.trim() && suggestions.length > 0 && <section id="security-suggestion-list" className="trade-suggestion-card" role="listbox" aria-label="候选证券">
+      <span className="trade-form-label">候选证券</span>
+      {suggestions.map((suggestion, index) => <button type="button" role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} id={`security-suggestion-${suggestion.market}-${suggestion.symbol}`} key={`${suggestion.market}:${suggestion.symbol}`} onMouseDown={(event) => event.preventDefault()} onClick={() => select(suggestion)}>
+        <span><strong>{suggestion.name}</strong><small>{suggestion.symbol} · {Market[suggestion.market as MarketType].label}</small></span><ChevronDown size={18} />
+      </button>)}
+    </section>}
+  </div>;
+}
+
 function ChoiceGroup({
   label,
   options,
@@ -129,7 +186,6 @@ export default function TransactionFormPage() {
   const [note, setNote] = useState('');
   const [investorName, setInvestorName] = useState('');
   const [lookupMessage, setLookupMessage] = useState('');
-  const [lookupState, setLookupState] = useState<'idle' | 'resolving' | 'resolved' | 'invalid'>('idle');
   const [underlying, setUnderlying] = useState('');
   const [optionType, setOptionType] = useState<'CALL' | 'PUT'>('CALL');
   const [strike, setStrike] = useState('');
@@ -153,15 +209,16 @@ export default function TransactionFormPage() {
   const partners = useMemo(() => (ledger?.partners ?? '').split(',').map((item) => item.trim()).filter(Boolean), [ledger?.partners]);
   const isSecurity = isSecurityTrade(tradeType);
 
-  const symbolSuggestions = useMemo(() => {
-    if (!isSecurity || assetType === 'OPTION' || symbol.trim().length < 1) return [];
-    const query = symbol.trim().toLowerCase();
-    const items = new Map<string, { symbol: string; name: string; market: MarketType }>();
-    [...quotes, ...ledgerTransactions.map((transaction) => ({ symbol: transaction.symbol, name: transaction.name, market: transaction.market }))]
-      .filter((item) => item.market === market && item.market !== 'CASH' && (item.symbol.toLowerCase().includes(query) || item.name.toLowerCase().includes(query)))
-      .forEach((item) => items.set(`${item.market}:${item.symbol}`, { symbol: item.symbol, name: item.name, market: item.market as MarketType }));
-    return [...items.values()].slice(0, 5);
-  }, [assetType, isSecurity, ledgerTransactions, market, quotes, symbol]);
+  const lookupIdentifier = assetType === 'OPTION' ? underlying : symbol;
+  const localSuggestions = useMemo(() => {
+    if (!isSecurity || !lookupIdentifier.trim() || market === 'CASH') return [];
+    return rankSecuritySuggestions(lookupIdentifier, [
+      ...quotes.filter((quote) => quote.market === market && quote.assetType === 'STOCK').map((quote) => ({ symbol: quote.symbol, name: quote.name || quote.symbol, market: quote.market, assetType: 'STOCK' as const })),
+      ...ledgerTransactions.filter((transaction) => transaction.market === market && transaction.assetType === 'STOCK' && transaction.symbol).map((transaction) => ({ symbol: transaction.symbol, name: transaction.name || transaction.symbol, market: transaction.market, assetType: 'STOCK' as const })),
+    ]);
+  }, [isSecurity, ledgerTransactions, lookupIdentifier, market, quotes]);
+  const [remoteSuggestions, setRemoteSuggestions] = useState<SecuritySuggestion[]>([]);
+  const securitySuggestions = useMemo(() => rankSecuritySuggestions(lookupIdentifier, [...localSuggestions, ...remoteSuggestions]), [localSuggestions, lookupIdentifier, remoteSuggestions]);
 
   useEffect(() => {
     if (!isEdit && activePlatform && enabledPlatforms.includes(activePlatform)) setPlatform(activePlatform);
@@ -219,33 +276,19 @@ export default function TransactionFormPage() {
   }, [id, isEdit, navigate, searchParams]);
 
   useEffect(() => {
-    if (!isSecurity || assetType === 'OPTION' || !symbol.trim()) {
-      setLookupState('idle');
-      setLookupMessage('');
-      return;
-    }
+    const query = lookupIdentifier.trim();
+    setRemoteSuggestions([]);
+    if (!isSecurity || !query || market === 'CASH') return;
     let cancelled = false;
-    setLookupState('resolving');
     const timer = window.setTimeout(() => {
-      void cacheService.resolveSecurityName(symbol.trim().toUpperCase(), market).then((resolvedName) => {
-        if (cancelled) return;
-        if (resolvedName) {
-          setName(resolvedName);
-          setLookupState('resolved');
-          setLookupMessage(`已识别：${resolvedName}`);
-        } else {
-          setLookupState('invalid');
-          setLookupMessage('未找到本地或已配置行情源中的证券');
-        }
+      void cacheService.suggestSecurities(query, market).then((items) => {
+        if (!cancelled) setRemoteSuggestions(items);
       }).catch(() => {
-        if (!cancelled) {
-          setLookupState('invalid');
-          setLookupMessage('证券名称暂时无法解析，可继续手动填写');
-        }
+        if (!cancelled) setRemoteSuggestions([]);
       });
     }, 350);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [assetType, isSecurity, market, symbol]);
+  }, [isSecurity, lookupIdentifier, market]);
 
   useEffect(() => {
     if (isSecurity) {
@@ -256,12 +299,16 @@ export default function TransactionFormPage() {
     setAssetType('STOCK');
   }, [isSecurity, market]);
 
-  const selectSuggestion = (suggestion: { symbol: string; name: string; market: MarketType }) => {
+  const selectSuggestion = (suggestion: SecuritySuggestion) => {
     setSymbol(suggestion.symbol);
     setName(suggestion.name);
-    setMarket(suggestion.market);
-    setLookupState('resolved');
+    setMarket(suggestion.market as MarketType);
     setLookupMessage(`已选择：${suggestion.name}`);
+  };
+
+  const selectUnderlyingSuggestion = (suggestion: SecuritySuggestion) => {
+    setUnderlying(suggestion.symbol);
+    setLookupMessage(`已选择正股：${suggestion.name}（${suggestion.symbol}）`);
   };
 
   const handleDelete = async () => {
@@ -275,7 +322,10 @@ export default function TransactionFormPage() {
     if (saving) return;
     const optionSymbol = `${underlying.trim().toUpperCase()} ${expiry.replace(/-/g, '').substring(2)}${optionType.charAt(0)}${strike}`;
     const computedSymbol = isSecurity ? (assetType === 'OPTION' ? optionSymbol : symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? 'FX' : 'CASH');
-    const computedName = isSecurity ? (assetType === 'OPTION' ? `${underlying.trim().toUpperCase()} ${expiry} ${optionType === 'CALL' ? 'CALL' : 'PUT'} $${strike}` : name.trim() || symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? '外汇兑换' : tradeType === 'DEPOSIT' ? '现金' : TradeTypeLabels[tradeType]);
+    const resolvedName = isSecurity && assetType !== 'OPTION' && !name.trim() && symbol.trim()
+      ? await cacheService.resolveSecurityName(symbol.trim().toUpperCase(), market).catch(() => null)
+      : null;
+    const computedName = isSecurity ? (assetType === 'OPTION' ? `${underlying.trim().toUpperCase()} ${expiry} ${optionType === 'CALL' ? 'CALL' : 'PUT'} $${strike}` : resolvedName || name.trim() || symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? '外汇兑换' : tradeType === 'DEPOSIT' ? '现金' : TradeTypeLabels[tradeType]);
     const parsedData = {
       ledgerId: activeLedgerId,
       tradeType,
@@ -346,7 +396,7 @@ export default function TransactionFormPage() {
   const typeLabel = isEdit ? '编辑记录' : '录入交易';
   const tone = typeTone(tradeType);
   const securityIdentifier = assetType === 'OPTION' ? underlying : symbol;
-  const canSubmit = Boolean(tradeDate && tradeTime && (isSecurity ? securityIdentifier.trim() && price && quantity : price) && (assetType !== 'OPTION' || (underlying && expiry && strike)) && lookupState !== 'invalid');
+  const canSubmit = Boolean(tradeDate && tradeTime && (isSecurity ? securityIdentifier.trim() && price && quantity : price) && (assetType !== 'OPTION' || (underlying && expiry && strike)));
 
   return <div className="trade-form-page">
     <header className="trade-form-header">
@@ -373,15 +423,14 @@ export default function TransactionFormPage() {
         <ChoiceGroup label="市场" value={market} onChange={(value) => setMarket(value as MarketType)} options={SECURITY_MARKETS.map((value) => ({ value, label: Market[value].label }))} />
         {(market === 'US' || market === 'HK') && <ChoiceGroup label="资产类型" value={assetType} onChange={(value) => setAssetType(value as 'STOCK' | 'OPTION')} options={[{ value: 'STOCK', label: '股票' }, { value: 'OPTION', label: '期权' }]} />}
         {assetType === 'OPTION' && (market === 'US' || market === 'HK') ? <>
-          <FieldBlock label="正股代码" value={underlying} onChange={(value) => setUnderlying(value.toUpperCase())} supportingText={lookupMessage} required />
+          <SecurityAutocompleteField label="正股代码" value={underlying} onChange={(value) => { setUnderlying(value.toUpperCase()); setLookupMessage(''); }} suggestions={securitySuggestions} onSelect={selectUnderlyingSuggestion} supportingText={lookupMessage || (securitySuggestions.length ? `找到 ${securitySuggestions.length} 条候选，点一下可自动补全` : '')} optionUnderlying />
           <div className="trade-form-grid">
             <FieldBlock label="到期日" value={expiry} onChange={setExpiry} type="date" required />
             <FieldBlock label="行权价" value={strike} onChange={setStrike} type="number" step="0.0001" required />
           </div>
           <ChoiceGroup label="期权类型" value={optionType} onChange={(value) => setOptionType(value as 'CALL' | 'PUT')} options={[{ value: 'CALL', label: '看涨 Call' }, { value: 'PUT', label: '看跌 Put' }]} />
         </> : <>
-          <FieldBlock label="证券代码 / 名称" value={symbol} onChange={(value) => setSymbol(value.toUpperCase())} supportingText={lookupMessage} required />
-          {symbolSuggestions.length > 0 && <section className="trade-suggestion-card"><span className="trade-form-label">候选证券</span>{symbolSuggestions.map((suggestion) => <button type="button" key={`${suggestion.market}:${suggestion.symbol}`} onClick={() => selectSuggestion(suggestion)}><span><strong>{suggestion.name}</strong><small>{suggestion.symbol} · {Market[suggestion.market].label}</small></span><ChevronDown size={18} /></button>)}</section>}
+          <SecurityAutocompleteField label="证券代码 / 名称" value={symbol} onChange={(value) => { setSymbol(value.toUpperCase()); setLookupMessage(''); }} suggestions={securitySuggestions} onSelect={selectSuggestion} supportingText={lookupMessage || (securitySuggestions.length ? `找到 ${securitySuggestions.length} 条候选，点一下可自动补全` : '')} />
         </>}
         <div className="trade-form-grid">
           <FieldBlock label={tradeType === 'SPLIT' ? '折算比例' : '成交价格'} value={price} onChange={(value) => { setPrice(value); if (tradeType === 'SPLIT') setQuantity('1'); }} type="number" step="0.0001" required />

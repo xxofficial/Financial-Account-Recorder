@@ -8,6 +8,9 @@ export interface MarketProviderSecurityInfo {
   assetType: 'STOCK' | 'OPTION';
 }
 
+/** A lightweight search result.  Suggestions must never imply a cache write. */
+export type MarketProviderSecuritySuggestion = MarketProviderSecurityInfo;
+
 export interface MarketDataProvider {
   readonly name: string;
   testConnection(apiKey: string): Promise<MarketDataResult<boolean>>;
@@ -24,6 +27,8 @@ export interface MarketDataProvider {
     apiKey: string
   ): Promise<MarketDataResult<HistoricalDailyBar[]>>;
   searchSecurity(symbol: string, market: string, apiKey: string): Promise<MarketDataResult<MarketProviderSecurityInfo | null>>;
+  /** Providers with a real search endpoint can opt in to multi-result suggestions. */
+  suggestSecurities?(query: string, market: string, apiKey: string, limit: number): Promise<MarketDataResult<MarketProviderSecuritySuggestion[]>>;
   
   // Capability check declarations
   supportsAssetType(assetType: 'STOCK' | 'OPTION'): boolean;

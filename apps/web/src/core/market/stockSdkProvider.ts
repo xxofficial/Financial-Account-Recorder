@@ -1,7 +1,7 @@
 import { StockSDK, normalizeSymbol, toTencentSymbol } from 'stock-sdk';
 import { marketFetch } from '../../platform/nativeRuntime';
 import type { HistoricalDailyBar, QuoteSnapshot } from '../../db/schema';
-import type { MarketDataProvider, MarketProviderSecurityInfo } from './marketDataProvider';
+import type { MarketDataProvider, MarketProviderSecurityInfo, MarketProviderSecuritySuggestion } from './marketDataProvider';
 import { logMarketRequest, type MarketDataResult } from './marketRequestHelper';
 
 type StockRequest = { symbol: string; market: string; assetType: 'STOCK' | 'OPTION' };
@@ -118,6 +118,27 @@ export class StockSdkProvider implements MarketDataProvider {
     }
   }
 
+  async suggestSecurities(query: string, market: string, _apiKey: string, limit: number): Promise<MarketDataResult<MarketProviderSecuritySuggestion[]>> {
+    if (!this.supportsMarket(market)) return this.skipped<MarketProviderSecuritySuggestion[]>();
+    const startedAt = Date.now();
+    try {
+      const requestedMarket = market.toUpperCase() as 'A_SHARE' | 'HK' | 'US';
+      const rows: any[] = await this.sdk().search(query.trim());
+      const seen = new Set<string>();
+      const data = rows.flatMap((row) => {
+        const symbol = this.searchResultSymbol(row, requestedMarket);
+        if (!symbol || !this.matchesSearchMarket(row, symbol, requestedMarket)) return [];
+        const key = `${requestedMarket}:${symbol.toUpperCase()}`;
+        if (seen.has(key)) return [];
+        seen.add(key);
+        return [{ symbol, market: requestedMarket, name: String(row?.name || row?.displayName || symbol), assetType: 'STOCK' as const }];
+      }).slice(0, limit);
+      return { ok: true, status: 'success', provider: this.name, data, durationMs: Date.now() - startedAt };
+    } catch (error) {
+      return this.fromError(error, startedAt);
+    }
+  }
+
   private sdk(): StockSDK {
     return new StockSDK({ fetchImpl: (input: any, init?: any) => marketFetch(input, init) as any });
   }
@@ -133,6 +154,26 @@ export class StockSdkProvider implements MarketDataProvider {
     const actual = String(value || '').replace(/^(sh|sz|bj)/i, '').replace(/\.HK$/i, '').replace(/\.US$/i, '').toUpperCase();
     const expected = this.toSdkSymbol(symbol, market).replace(/^(sh|sz|bj)/i, '').replace(/^0+/, '').toUpperCase();
     return market === 'HK' ? actual.replace(/^0+/, '') === expected.replace(/^0+/, '') : actual === expected;
+  }
+
+  private searchResultSymbol(row: any, market: 'A_SHARE' | 'HK' | 'US'): string {
+    const raw = String(row?.code || row?.symbol || row?.ticker || '').trim();
+    if (!raw) return '';
+    if (market === 'A_SHARE') return raw.replace(/^(sh|sz|bj)/i, '').replace(/\.(SH|SZ|BJ)$/i, '');
+    if (market === 'HK') return raw.replace(/\.HK$/i, '').replace(/^0+/, '').padStart(5, '0');
+    return raw.replace(/\.US$/i, '').toUpperCase();
+  }
+
+  private matchesSearchMarket(row: any, symbol: string, market: 'A_SHARE' | 'HK' | 'US'): boolean {
+    const hint = String(row?.market || row?.marketType || row?.exchange || '').toUpperCase();
+    if (hint) {
+      if (market === 'A_SHARE') return /CN|A_SHARE|SH|SZ|BJ/.test(hint);
+      if (market === 'HK') return /HK|HONG/.test(hint);
+      if (market === 'US') return /US|NASDAQ|NYSE|AMEX/.test(hint);
+    }
+    if (market === 'A_SHARE') return /^\d{6}$/.test(symbol);
+    if (market === 'HK') return /^\d{5}$/.test(symbol);
+    return /^[A-Z][A-Z0-9.-]*$/i.test(symbol);
   }
 
   private toBar(row: any, symbol: string, market: string, startDate: string, endDate: string): HistoricalDailyBar | null {

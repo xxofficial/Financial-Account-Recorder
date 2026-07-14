@@ -27,6 +27,7 @@ const toDate = (value: string) => new Date(`${value}T00:00:00Z`);
 const toDateString = (value: Date) => value.toISOString().slice(0, 10);
 const formatDate = (value: string) => `${value.slice(5, 7)}/${value.slice(8, 10)}`;
 const formatRangeDate = (value: string) => `${Number(value.slice(0, 4))}/${Number(value.slice(5, 7))}/${Number(value.slice(8, 10))}`;
+const sameDateSet = (left: Set<string>, right: Set<string>) => left.size === right.size && [...left].every((date) => right.has(date));
 const displayAmount = (valueCny: number, cnyRate: number) => valueCny / cnyRate;
 const signed = (valueCny: number, displayCurrency: { symbol: string; cnyRate: number }) => formatSignedDisplayAmount(valueCny, displayCurrency.symbol, displayCurrency.cnyRate);
 const compactCalendarValue = (value: number, unit: CalendarUnit) => {
@@ -157,10 +158,10 @@ export default function AnalysisPage() {
     const markets = transactions.map((transaction) => transaction.market);
     let active = true;
     void tradingCalendarService.closedDatesForMarkets(markets, dates).then((dates) => {
-      if (active) setClosedCalendarDates(dates);
+      if (active) setClosedCalendarDates((current) => sameDateSet(current, dates) ? current : dates);
     });
     return () => { active = false; };
-  }, [calendarMode, calendarOffset, latestDate, transactions]);
+  }, [calendar.cells, calendarMode, calendarOffset, latestDate, transactions]);
   const currency = displayCurrency.symbol;
   const calendarValue = (point: AnalysisPoint) => compactCalendarValue(calendarUnit === 'AMOUNT' ? point.dailyProfitCny / displayCurrency.cnyRate : point.dailyReturnPercent, calendarUnit);
   const setDisplayCurrency = (nextCurrency: CurrencyType) => void db.appSettings.put({ key: 'display_currency', value: nextCurrency, updatedAt: Date.now() });

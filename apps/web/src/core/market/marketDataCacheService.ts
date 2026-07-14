@@ -2,7 +2,7 @@ import { db } from '../../db/localDb';
 import { QuoteSnapshot, HistoricalDailyBar, HistoricalBar } from '../../db/schema';
 import { StockSdkProvider } from './stockSdkProvider';
 import { MarketDataAppProvider } from './marketDataProvider';
-import { MarketDataProvider } from './marketDataProvider';
+import { MarketDataProvider, type MarketProviderSecurityInfo } from './marketDataProvider';
 import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
 import { AndroidDefaultMarketProvider } from './androidDefaultMarketProvider';
@@ -10,6 +10,40 @@ import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
 import { tradingCalendarService } from './tradingCalendarService';
 
 const MARKET_TIME_ZONES: Record<string, string> = { US: 'America/New_York', HK: 'Asia/Hong_Kong', A_SHARE: 'Asia/Shanghai' };
+
+export interface SecuritySuggestion {
+  symbol: string;
+  market: string;
+  name: string;
+  assetType: 'STOCK';
+}
+
+function suggestionKey(item: Pick<SecuritySuggestion, 'market' | 'symbol'>): string {
+  return `${item.market.toUpperCase()}:${item.symbol.trim().toUpperCase()}`;
+}
+
+/** Exact code, code prefix, then name match; stable alphabetic tie-breaking. */
+export function rankSecuritySuggestions(query: string, items: SecuritySuggestion[], limit = 6): SecuritySuggestion[] {
+  const needle = query.trim().toLowerCase();
+  const unique = new Map<string, SecuritySuggestion>();
+  for (const item of items) {
+    if (!item.symbol.trim() || !item.name.trim()) continue;
+    const key = suggestionKey(item);
+    if (!unique.has(key)) unique.set(key, { ...item, symbol: item.symbol.trim().toUpperCase() });
+  }
+  const rank = (item: SecuritySuggestion) => {
+    const symbol = item.symbol.toLowerCase();
+    const name = item.name.toLowerCase();
+    if (symbol === needle) return 0;
+    if (symbol.startsWith(needle)) return 1;
+    if (name.includes(needle)) return 2;
+    return 3;
+  };
+  return [...unique.values()]
+    .filter((item) => !needle || item.symbol.toLowerCase().includes(needle) || item.name.toLowerCase().includes(needle))
+    .sort((left, right) => rank(left) - rank(right) || left.symbol.localeCompare(right.symbol) || left.name.localeCompare(right.name, 'zh-Hans-CN'))
+    .slice(0, limit);
+}
 
 function addUtcDays(date: string, days: number): string {
   const value = new Date(`${date}T00:00:00Z`);
@@ -58,6 +92,43 @@ export class MarketDataCacheService {
       }))
       .filter(item => item.provider !== undefined && (item.apiKey.trim() !== '' || item.provider.name === 'stock-sdk' || item.provider.name === 'android-default'));
     return configuredProviders;
+  }
+
+  /**
+   * Finds stock candidates without mutating quote/history caches.  Local data is
+   * always retained when a provider is unavailable or its request fails.
+   */
+  async suggestSecurities(query: string, market: string, limit = 6): Promise<SecuritySuggestion[]> {
+    const cleanQuery = query.trim();
+    const cleanMarket = market.toUpperCase();
+    if (!cleanQuery || !cleanMarket || cleanMarket === 'CASH') return [];
+
+    const [quotes, transactions] = await Promise.all([db.quoteSnapshots.toArray(), db.transactions.toArray()]);
+    const local = rankSecuritySuggestions(cleanQuery, [
+      ...quotes.filter((quote) => quote.market === cleanMarket && quote.assetType === 'STOCK').map((quote) => ({ symbol: quote.symbol, market: quote.market, name: quote.name || quote.symbol, assetType: 'STOCK' as const })),
+      ...transactions.filter((transaction) => transaction.market === cleanMarket && transaction.assetType === 'STOCK' && transaction.symbol).map((transaction) => ({ symbol: transaction.symbol, market: transaction.market, name: transaction.name || transaction.symbol, assetType: 'STOCK' as const })),
+    ], limit);
+
+    const remote: SecuritySuggestion[] = [];
+    for (const { provider, apiKey } of await this.getActiveProviders()) {
+      if (!provider.supportsAssetType('STOCK') || !provider.supportsMarket(cleanMarket)) continue;
+      try {
+        if (provider.suggestSecurities) {
+          const result = await provider.suggestSecurities(cleanQuery, cleanMarket, apiKey, limit);
+          if (result.ok && result.data) remote.push(...result.data.filter((item) => item.assetType === 'STOCK').map((item) => ({ ...item, market: cleanMarket, assetType: 'STOCK' as const })));
+        } else {
+          const result = await provider.searchSecurity(cleanQuery, cleanMarket, apiKey);
+          if (result.ok && result.data?.name) remote.push(this.toSuggestion(result.data, cleanMarket));
+        }
+      } catch (error) {
+        console.warn(`Provider ${provider.name} failed during security suggestion`, error);
+      }
+    }
+    return rankSecuritySuggestions(cleanQuery, [...local, ...remote], limit);
+  }
+
+  private toSuggestion(info: MarketProviderSecurityInfo, market: string): SecuritySuggestion {
+    return { symbol: info.symbol, market, name: info.name || info.symbol, assetType: 'STOCK' };
   }
 
   /**
