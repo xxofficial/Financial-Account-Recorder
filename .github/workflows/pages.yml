@@ -28,7 +28,10 @@ jobs:
       - run: npm run typecheck
       - run: npm run test -- --testTimeout=15000
       - run: npx playwright install --with-deps chromium
-      - run: npm run test:e2e
+      # The stock-sdk probe suite requires its dedicated market-probe build and
+      # live upstream endpoints; keep the Pages gate deterministic and run the
+      # application smoke suite here.
+      - run: npm run test:e2e --workspace @recoder/web -- src/e2e/smoke.spec.ts
       - run: npm run build
       - uses: actions/configure-pages@v5
         with:

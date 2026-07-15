@@ -43,6 +43,12 @@ export default defineConfig({
       workbox: {
         globPatterns: ['**/*.{js,css,html,svg,webmanifest}'],
         cleanupOutdatedCaches: true
+      },
+      // The Playwright suite exercises the PWA shell through Vite's dev server.
+      // Enable the manifest and service worker there as well as in production.
+      devOptions: {
+        enabled: true,
+        type: 'module'
       }
     })
   ],
