@@ -31,6 +31,12 @@ test('extracts a local text PDF statement through the browser importer', async (
   await expect(page.getByText(/SCHWAB ·/).first()).toBeVisible({ timeout: 20_000 });
 });
 
+test('keeps statement passwords in platform settings instead of the import form', async ({ page }) => {
+  await page.goto('/#/data/imports');
+  await expect(page.getByPlaceholder('如 PDF 已加密，请输入密码（不保存）')).toHaveCount(0);
+  await expect(page.getByText('加密结单会自动使用设置中为当前平台保存的密码')).toBeVisible();
+});
+
 test('removes legacy data routes instead of preserving aliases', async ({ page }) => {
   await page.goto('/#/import-export');
   await expect(page).toHaveURL(/#\/$/);

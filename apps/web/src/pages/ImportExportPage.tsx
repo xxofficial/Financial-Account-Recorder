@@ -46,7 +46,6 @@ export default function ImportExportPage() {
   const [nativePreviews, setNativePreviews] = useState<NativeInboxPreview[]>([]);
   const [nativeInboxBusy, setNativeInboxBusy] = useState(false);
   const [nativeInboxMessage, setNativeInboxMessage] = useState('');
-  const [pdfPasswords, setPdfPasswords] = useState<Record<string, string>>({});
   const [statementFile, setStatementFile] = useState<File | null>(null);
   const [statementPassword, setStatementPassword] = useState('');
   const [statementCandidates, setStatementCandidates] = useState<ParsedTradeCandidate[]>([]);
@@ -59,17 +58,22 @@ export default function ImportExportPage() {
   const isEmailRoute = location.pathname.endsWith('/email-imports');
 
   useEffect(() => {
-    if (isAndroid || !activePlatform) return;
+    let cancelled = false;
+    if (isAndroid || !activePlatform) {
+      setStatementPassword('');
+      return () => { cancelled = true; };
+    }
     void db.appSettings.get(`statement_pdf_password_${activePlatform}`).then((setting) => {
-      if (typeof setting?.value === 'string') setStatementPassword(setting.value);
+      if (!cancelled) setStatementPassword(typeof setting?.value === 'string' ? setting.value : '');
     });
+    return () => { cancelled = true; };
   }, [activePlatform, isAndroid]);
 
-  const refreshNativeInbox = async (passwords = pdfPasswords) => {
+  const refreshNativeInbox = async () => {
     if (!isAndroid) return;
     setNativeInboxBusy(true);
     try {
-      setNativePreviews(await listNativeInboxPreviews(passwords));
+      setNativePreviews(await listNativeInboxPreviews());
     } catch (error) {
       setNativeInboxMessage(`读取 Android 待导入收件箱失败：${error instanceof Error ? error.message : String(error)}`);
     } finally {
@@ -273,18 +277,7 @@ export default function ImportExportPage() {
                 </div>
               )) : <div className="text-xs" style={{ color: 'var(--color-warning)' }}>{preview.warnings.join(' ')}</div>}
               {preview.candidates.length > 0 && preview.warnings.length > 0 && <div className="text-xs" style={{ color: 'var(--color-warning)' }}>{preview.warnings.join(' ')}</div>}
-              {preview.item.source === 'PDF' && preview.candidates.length === 0 && (
-                <div style={{ display: 'flex', gap: '0.5rem' }}>
-                  <input
-                    type="password"
-                    value={pdfPasswords[preview.item.id] ?? ''}
-                    onChange={(event) => setPdfPasswords({ ...pdfPasswords, [preview.item.id]: event.target.value })}
-                    placeholder="如 PDF 已加密，请输入密码（仅本次提取使用）"
-                    style={{ flex: 1, fontSize: '0.75rem', padding: '0.4rem 0.55rem' }}
-                  />
-                  <button type="button" disabled={nativeInboxBusy || !pdfPasswords[preview.item.id]} onClick={() => void refreshNativeInbox(pdfPasswords)} style={{ padding: '0.4rem 0.55rem', fontSize: '0.75rem' }}>重新提取</button>
-                </div>
-              )}
+              {preview.item.source === 'PDF' && preview.candidates.length === 0 && <div className="text-xs text-muted">若结单已加密，请先在设置中保存该平台的电子结单密码，再点击“刷新”。</div>}
               <div style={{ display: 'flex', gap: '0.5rem' }}>
                 {preview.candidates.length > 0 && <button type="button" className="primary" disabled={nativeInboxBusy} onClick={() => void handleImportNativeItem(preview)} style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}>确认导入 {preview.candidates.length} 笔</button>}
                 <button type="button" disabled={nativeInboxBusy} onClick={() => void handleDismissNativeItem(preview)} style={{ flex: 1, padding: '0.4rem', fontSize: '0.8rem' }}>跳过</button>
@@ -310,7 +303,7 @@ export default function ImportExportPage() {
           <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入文本 PDF 结单</h3>
         </div>
         <p className="text-xs text-muted" style={{ margin: 0 }}>
-          支持长桥、汇丰、uSMART 与嘉信的可复制文本结单。PDF、密码和提取文本只在本次浏览器会话中使用；扫描件不支持。
+          支持长桥、汇丰、uSMART 与嘉信的可复制文本结单。加密结单会自动使用设置中为当前平台保存的密码；扫描件不支持。
         </p>
         <label className="import-export-file-row">
           <span className="import-export-file-icon"><FileText size={18} aria-hidden="true" /></span>
@@ -320,18 +313,6 @@ export default function ImportExportPage() {
           </span>
           <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf" onChange={handleStatementFileChange} disabled={statementBusy} />
         </label>
-        {statementFile && (
-          <div style={{ display: 'flex', gap: '0.5rem' }}>
-            <input
-              type="password"
-              value={statementPassword}
-              onChange={(event) => setStatementPassword(event.target.value)}
-              placeholder="如 PDF 已加密，请输入密码（不保存）"
-              style={{ flex: 1, fontSize: '0.75rem', padding: '0.4rem 0.55rem' }}
-            />
-            <button type="button" disabled={statementBusy || !statementPassword} onClick={() => void previewStatementFile(statementFile, statementPassword)} style={{ padding: '0.4rem 0.55rem', fontSize: '0.75rem' }}>重新解析</button>
-          </div>
-        )}
         {statementBusy && <div className="text-xs text-muted">正在提取并解析结单…</div>}
         {statementWarnings.length > 0 && <div className="text-xs" style={{ color: 'var(--color-warning)' }}>{statementWarnings.join(' ')}</div>}
         {statementMessage && <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{statementMessage}</div>}

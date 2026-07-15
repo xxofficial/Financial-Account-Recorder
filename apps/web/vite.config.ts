@@ -41,7 +41,7 @@ export default defineConfig({
         ]
       },
       workbox: {
-        globPatterns: ['**/*.{js,css,html,svg,webmanifest}'],
+        globPatterns: ['**/*.{js,css,html,svg,png,webmanifest}'],
         cleanupOutdatedCaches: true
       },
       // The Playwright suite exercises the PWA shell through Vite's dev server.

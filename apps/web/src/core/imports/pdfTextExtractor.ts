@@ -76,7 +76,7 @@ export async function extractPdfText(file: File, password?: string): Promise<str
     const message = error instanceof Error ? error.message : String(error);
     const needsPassword = /password|encrypted/i.test(message);
     throw new PdfTextExtractionError(
-      needsPassword ? '该 PDF 已加密，请输入结单密码后重新解析。' : `PDF 文本提取失败：${message}`,
+      needsPassword ? '该 PDF 已加密，请先在设置中为对应平台保存电子结单密码后重新选择文件。' : `PDF 文本提取失败：${message}`,
       needsPassword,
     );
   } finally {

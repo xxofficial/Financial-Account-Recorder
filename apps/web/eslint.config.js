@@ -7,7 +7,7 @@ import globals from 'globals';
 
 export default tseslint.config(
   {
-    ignores: ['dist', 'tmp', 'node_modules', 'vite.config.ts', 'eslint.config.js'],
+    ignores: ['dist', 'dev-dist', 'tmp', 'node_modules', 'vite.config.ts', 'eslint.config.js'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

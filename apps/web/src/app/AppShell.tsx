@@ -157,7 +157,10 @@ function LedgerDrawer({ close }: { close: () => void }) {
 
 export function PlatformMark({ platform, className }: { platform?: PlatformType; className?: string }) {
   const iconName = platform ? platformIconNames[platform] : undefined;
-  return <span className={`platform-mark ${platform?.toLowerCase() ?? 'summary'} ${className ?? ''}`}>{iconName ? <img src={`/platform_${iconName}.png`} alt="" /> : platform ? BrokerPlatform[platform].shortLabel : '汇'}</span>;
+  // Do not use a root-relative URL here: GitHub Pages hosts this app below the
+  // repository path, so `/platform_*.png` points outside the deployed app.
+  const iconSrc = iconName ? `${import.meta.env.BASE_URL}platform_${iconName}.png` : undefined;
+  return <span className={`platform-mark ${platform?.toLowerCase() ?? 'summary'} ${className ?? ''}`}>{iconSrc ? <img src={iconSrc} alt="" /> : platform ? BrokerPlatform[platform].shortLabel : '汇'}</span>;
 }
 
 function GlobalTopBar({ onOpenDrawer, onRefresh, refreshing }: { onOpenDrawer: () => void; onRefresh?: () => void; refreshing: boolean }) {
