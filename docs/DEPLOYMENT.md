@@ -89,7 +89,13 @@ Vercel 是最便捷的托管方式，支持开箱即用的前端路由。
 
 ---
 
-## 四、 重要安全与数据保护警示 ⚠️
+## 四、 GitHub Pages 发布排障
+
+本项目实际使用 GitHub Actions 发布 Pages。详细的发布前检查、E2E 测试边界、失败日志读取、Service Worker 缓存处理和完成定义请参阅：[GitHub Pages 发布手册](./PAGES_DEPLOYMENT_PLAYBOOK.md)。
+
+---
+
+## 五、 重要安全与数据保护警示 ⚠️
 
 > [!CAUTION]
 > **本地数据防丢警示**：
