@@ -67,6 +67,11 @@ export interface Transaction {
   fxToCurrency: string | null;
   fxToAmount: number | null;
   fxRate: number | null;
+
+  /** Stable id shared by the two sides of a platform-to-platform transfer. */
+  transferGroupId?: string | null;
+  /** The broker platform on the other side of a paired transfer. */
+  transferCounterpartyPlatform?: string | null;
 }
 
 export interface QuoteSnapshot {
@@ -80,7 +85,7 @@ export interface QuoteSnapshot {
   change: number | null;
   changePercent: number | null;
   currency: string;
-  provider: string; // e.g. "itick", "twelvedata"
+  provider: string; // e.g. "stock-sdk", "marketdata"
   fetchedAt: number;
   requestStatus?: MarketRequestStatus;
 }
@@ -97,11 +102,12 @@ export interface HistoricalDailyBar {
   close: number;
   volume: number | null;
   provider: string;
+  adjustmentMode?: 'raw' | 'split_adjusted' | 'dividend_adjusted' | 'unknown';
   fetchedAt: number;
 }
 
 export interface MarketProviderConfig {
-  provider: 'itick' | 'twelvedata' | 'marketdata' | 'android-default';
+  provider: 'stock-sdk' | 'marketdata' | 'android-default';
   enabled: number; // 1 = enabled, 0 = disabled (IndexedDB cannot index booleans)
   priority: number;
   apiKey: string;

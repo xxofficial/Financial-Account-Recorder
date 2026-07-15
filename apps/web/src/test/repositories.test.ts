@@ -45,21 +45,21 @@ describe('Database Repositories', () => {
 
     await db.marketProviderConfigs.bulkAdd([
       {
-        provider: 'itick',
+        provider: 'stock-sdk',
         enabled: 0,
         priority: 1,
         apiKey: '',
-        baseUrl: 'https://api.itick.org',
+        baseUrl: 'stock-sdk',
         optionsJson: '{}',
         createdAt: Date.now(),
         updatedAt: Date.now()
       },
       {
-        provider: 'twelvedata',
+        provider: 'android-default',
         enabled: 0,
         priority: 2,
         apiKey: '',
-        baseUrl: 'https://api.twelvedata.com',
+        baseUrl: 'yahoo',
         optionsJson: '{}',
         createdAt: Date.now(),
         updatedAt: Date.now()
@@ -89,7 +89,7 @@ describe('Database Repositories', () => {
 
       const configs = await configRepo.list();
       expect(configs).toHaveLength(3);
-      expect(configs[0].provider).toBe('itick');
+      expect(configs[0].provider).toBe('stock-sdk');
       expect(configs[0].priority).toBe(1);
     });
 
@@ -283,7 +283,7 @@ describe('Database Repositories', () => {
         change: 2.50,
         changePercent: 1.39,
         currency: 'USD',
-        provider: 'itick',
+        provider: 'stock-sdk',
       });
 
       const snapshot = await quoteRepo.get('US', 'AAPL');
@@ -312,7 +312,7 @@ describe('Database Repositories', () => {
           low: 178.50,
           close: 180.00,
           volume: 50000000,
-          provider: 'itick',
+          provider: 'stock-sdk',
         },
         {
           symbol: 'AAPL',
@@ -324,7 +324,7 @@ describe('Database Repositories', () => {
           low: 179.50,
           close: 182.50,
           volume: 52000000,
-          provider: 'itick',
+          provider: 'stock-sdk',
         },
         {
           symbol: 'AAPL',
@@ -336,7 +336,7 @@ describe('Database Repositories', () => {
           low: 181.50,
           close: 183.20,
           volume: 45000000,
-          provider: 'itick',
+          provider: 'stock-sdk',
         }
       ]);
 

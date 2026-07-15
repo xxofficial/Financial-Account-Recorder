@@ -16,7 +16,6 @@ export interface MarketDataResult<T> {
   durationMs?: number;
   response?: Response;
 }
-
 export async function logMarketRequest(log: {
   providerId?: string;
   type: MarketRequestLogType;
@@ -134,7 +133,7 @@ export async function requestWithLogging<T>(
         lowerText.includes('rate limit exceeded') ||
         lowerText.includes('too many requests') ||
         lowerText.includes('limit reached') ||
-        (provider === 'twelvedata' && lowerText.includes('api limit reached'))
+        false
       ) {
         finalStatus = 'rate_limited';
         message = '此行情源的 API 今日或当前频度额度已用尽。';
@@ -143,18 +142,6 @@ export async function requestWithLogging<T>(
           retryAfterMs = 60 * 1000;
           nextRetryAt = Date.now() + retryAfterMs;
         }
-      } else if (
-        provider === 'twelvedata' && jsonHasError(text)
-      ) {
-        finalStatus = 'failed';
-        message = getTwelveDataError(text);
-        errorCode = 'API_ERROR';
-      } else if (
-        provider === 'itick' && jsonHasItickError(text)
-      ) {
-        finalStatus = 'failed';
-        message = getItickError(text);
-        errorCode = 'API_ERROR';
       } else {
         try {
           resultData = await parseData(response);
@@ -230,40 +217,4 @@ export async function requestWithLogging<T>(
     durationMs,
     response: rawResponse
   };
-}
-
-function jsonHasError(text: string): boolean {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed.status === 'error' || parsed.code !== undefined && parsed.code !== 200;
-  } catch {
-    return false;
-  }
-}
-
-function getTwelveDataError(text: string): string {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed.message || 'TwelveData API 错误';
-  } catch {
-    return 'TwelveData API 响应解析失败';
-  }
-}
-
-function jsonHasItickError(text: string): boolean {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed.code !== undefined && parsed.code !== 0;
-  } catch {
-    return false;
-  }
-}
-
-function getItickError(text: string): string {
-  try {
-    const parsed = JSON.parse(text);
-    return parsed.msg || parsed.message || `iTick 错误码 ${parsed.code}`;
-  } catch {
-    return 'iTick API 响应解析失败';
-  }
 }

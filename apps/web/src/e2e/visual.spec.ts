@@ -59,6 +59,7 @@ for (const width of phoneWidths) {
     await page.goto('/#/settings');
     await expect(page.getByRole('heading', { name: '设置' })).toBeVisible();
     await expect(page.getByRole('heading', { name: '通用偏好' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '自动同步' })).toBeVisible();
     await expect(page.getByRole('heading', { name: '平台配置' })).toBeVisible();
     await expect(page.getByText('邮箱同步')).toHaveCount(0);
     await page.getByRole('button', { name: /涨跌颜色/ }).click();
@@ -127,8 +128,7 @@ for (const width of phoneWidths) {
     await expect(page.locator('.trade-form-page')).toBeVisible();
     await expect(page.locator('.bottom-tab-bar')).toHaveCount(0);
     await expect(page.locator('.sync-card')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /自动估算/ })).toBeDisabled();
-    await expect(page.getByText('自动估算（待实现）')).toBeVisible();
+    await expect(page.getByRole('button', { name: '自动估算' })).toBeEnabled();
     await expect(page).toHaveScreenshot(`transaction-form-${width}.png`, {
       animations: 'disabled',
       fullPage: true,

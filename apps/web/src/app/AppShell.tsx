@@ -11,6 +11,7 @@ import { BrokerPlatform, CurrencyType, DisplayCurrency, PlatformType } from '../
 import { ExchangeRates, PortfolioCalculator } from '../core/portfolio/portfolioCalculator';
 import { analysisRuntimeCache } from '../core/portfolio/analysisRuntime';
 import { useEdgeSwipeBack } from '../components/SecondaryPageHeader';
+import { syncCorporateActionsOnAppOpen } from '../core/corporateActions/splitActionService';
 
 interface AppShellProps { children: React.ReactNode; }
 type RefreshAction = (() => Promise<void>) | undefined;
@@ -185,7 +186,7 @@ function RecordActionSheet({ close }: { close: () => void }) {
   const open = (type: string) => { navigate(`/transactions/new?type=${type}`); close(); };
   const groups = [
     ['证券交易', [['BUY', '买入证券'], ['SELL', '卖出证券']]],
-    ['资金操作', [['DEPOSIT', '入金'], ['WITHDRAW', '出金'], ['TRANSFER_IN', '转入'], ['TRANSFER_OUT', '转出'], ['FX_CONVERSION', '货币兑换']]],
+    ['资金操作', [['DEPOSIT', '入金'], ['WITHDRAW', '出金'], ['TRANSFER_OUT&paired=1', '平台间转仓'], ['FX_CONVERSION', '货币兑换']]],
     ['公司行动与其他', [['DIVIDEND', '股息'], ['TAX', '税费'], ['INTEREST', '利息'], ['SPLIT', '拆股'], ['EXPIRE', '期权到期'], ['OTHER', '其他']]],
   ];
   return <div className="action-sheet-backdrop" onClick={close}><div className="action-sheet" role="dialog" aria-modal="true" aria-label="记一笔" onClick={(event) => event.stopPropagation()}>
@@ -255,7 +256,10 @@ export default function AppShell({ children }: AppShellProps) {
     media.addEventListener?.('change', onChange);
     return () => media.removeEventListener?.('change', onChange);
   }, [themePreference]);
-  useEffect(() => { void prepareMarketSyncOnAppOpen().catch((error) => console.warn('行情启动检查失败', error)); }, []);
+  useEffect(() => {
+    void prepareMarketSyncOnAppOpen().catch((error) => console.warn('行情启动检查失败', error));
+    void syncCorporateActionsOnAppOpen().catch((error) => console.warn('公司行动启动检查失败', error));
+  }, []);
   useEffect(() => {
     if (typeof selectedLedgerId !== 'number') return;
     const timer = window.setTimeout(() => {

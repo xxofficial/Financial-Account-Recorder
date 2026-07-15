@@ -16,7 +16,7 @@ import {
   OptionDailyBar,
   OptionDailyBarCoverage,
 } from './schema';
-import { isAndroidNativeRuntime } from '../platform/nativeRuntime';
+import { clearRetiredMarketProviderSecrets, isAndroidNativeRuntime } from '../platform/nativeRuntime';
 
 export class LocalDatabase extends Dexie {
   ledgers!: Table<Ledger, number>;
@@ -230,10 +230,39 @@ export class LocalDatabase extends Dexie {
 
     // Version 10: Drop the legacy store after the canonical copy succeeds.
     this.version(10).stores({ historicalDailyBars: null });
+
+    // Version 11: retire paid stock providers without touching historical cache or logs.
+    this.version(11).stores({
+      marketProviderConfigs: 'provider, enabled, priority',
+      marketProviderQuotaStates: 'providerId',
+    }).upgrade(async (tx) => {
+      const configs = tx.table('marketProviderConfigs');
+      const quotas = tx.table('marketProviderQuotaStates');
+      await Promise.all([configs.delete('itick'), configs.delete('twelvedata'), quotas.delete('itick'), quotas.delete('twelvedata')]);
+      const now = Date.now();
+      const stockSdk = await configs.get('stock-sdk');
+      if (!stockSdk) await configs.put({ provider: 'stock-sdk', enabled: 1, priority: 0, apiKey: '', baseUrl: 'stock-sdk', optionsJson: '{"keyless":true,"stockOnly":true}', createdAt: now, updatedAt: now });
+      else await configs.update('stock-sdk', { enabled: 1, priority: 0, apiKey: '', updatedAt: now });
+      const android = await configs.get('android-default');
+      if (android) await configs.update('android-default', { priority: 1, optionsJson: '{"keyless":true,"optionOnly":true}', updatedAt: now });
+      const marketdata = await configs.get('marketdata');
+      if (marketdata) await configs.update('marketdata', { priority: 2, updatedAt: now });
+    });
+
+    // Version 12: register optional linkage metadata for paired transfers.
+    // The fields are deliberately not indexed; pair lookups stay scoped to a
+    // ledger and are small enough to filter in memory without another index.
+    this.version(12).stores({
+      transactions: '++id, syncId, sourceFingerprint, ledgerId, tradeDate, symbol, market, platform, [ledgerId+tradeDate], [market+symbol], [platform+externalReference]',
+    });
   }
 }
 
 export const db = new LocalDatabase();
+
+// SecureSecret is outside IndexedDB, so perform the matching key cleanup after
+// the schema migration. This never clears cached prices or request logs.
+void db.open().then(() => clearRetiredMarketProviderSecrets()).catch(() => undefined);
 
 // Database seed logic on first creation
 db.on('populate', (tx) => {
@@ -256,39 +285,29 @@ db.on('populate', (tx) => {
 
   tx.table('marketProviderConfigs').bulkAdd([
     {
-      provider: 'android-default',
-      enabled: isAndroidNativeRuntime() ? 1 : 0,
+      provider: 'stock-sdk',
+      enabled: 1,
       priority: 0,
       apiKey: '',
-      baseUrl: '',
-      optionsJson: '{"keyless":true}',
+      baseUrl: 'stock-sdk',
+      optionsJson: '{"keyless":true,"stockOnly":true}',
       createdAt: Date.now(),
       updatedAt: Date.now()
     },
     {
-      provider: 'itick',
-      enabled: 0,
+      provider: 'android-default',
+      enabled: isAndroidNativeRuntime() ? 1 : 0,
       priority: 1,
       apiKey: '',
-      baseUrl: 'https://api.itick.org',
-      optionsJson: '{}',
-      createdAt: Date.now(),
-      updatedAt: Date.now()
-    },
-    {
-      provider: 'twelvedata',
-      enabled: 0,
-      priority: 2,
-      apiKey: '',
-      baseUrl: 'https://api.twelvedata.com',
-      optionsJson: '{}',
+      baseUrl: 'yahoo',
+      optionsJson: '{"keyless":true,"optionOnly":true}',
       createdAt: Date.now(),
       updatedAt: Date.now()
     },
     {
       provider: 'marketdata',
       enabled: 0,
-      priority: 3,
+      priority: 2,
       apiKey: '',
       baseUrl: 'https://api.marketdata.app',
       optionsJson: '{}',

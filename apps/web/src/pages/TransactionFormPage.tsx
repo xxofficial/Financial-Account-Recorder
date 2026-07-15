@@ -6,9 +6,11 @@ import { TransactionRepository, AppSettingRepository } from '../db/repositories'
 import { db } from '../db/localDb';
 import { BrokerPlatform, DisplayCurrency, Market, TradeTypeLabels, isSecurityTrade, type CurrencyType, type MarketType, type PlatformType, type TradeType } from '../shared/models';
 import { transactionSchema } from '../shared/schemas';
-import { cacheService } from '../core/market/marketDataCacheService';
+import { cacheService, rankSecuritySuggestions, type SecuritySuggestion } from '../core/market/marketDataCacheService';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
+import { createTransferPair, deleteTransferPairByTransactionId, getTransferPairByTransactionId, TransferValidationError, updateTransferPair } from '../core/transfers/transferService';
+import { estimateTradeFees } from '../core/fees/tradeFeeEstimator';
 import { PlatformMark, useAppShell } from '../app/AppShell';
 
 const txnRepo = new TransactionRepository();
@@ -85,6 +87,63 @@ function FieldBlock({
   </label>;
 }
 
+function SecurityAutocompleteField({
+  label,
+  value,
+  onChange,
+  suggestions,
+  onSelect,
+  supportingText,
+  optionUnderlying = false,
+}: {
+  label: string;
+  value: string;
+  onChange: (value: string) => void;
+  suggestions: SecuritySuggestion[];
+  onSelect: (suggestion: SecuritySuggestion) => void;
+  supportingText?: string;
+  optionUnderlying?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  useEffect(() => setActiveIndex(0), [value, suggestions.length]);
+  const select = (suggestion: SecuritySuggestion) => { onSelect(suggestion); setOpen(false); };
+  return <div className="trade-security-autocomplete">
+    <label className="trade-form-field">
+      <span className="trade-form-label">{label}</span>
+      <span className="trade-form-input-wrap">
+        <input
+          value={value}
+          placeholder={optionUnderlying ? '输入正股代码或名称' : '输入证券代码或名称'}
+          required
+          role="combobox"
+          aria-autocomplete="list"
+          aria-expanded={open && suggestions.length > 0}
+          aria-controls="security-suggestion-list"
+          aria-activedescendant={open && suggestions[activeIndex] ? `security-suggestion-${suggestions[activeIndex].market}-${suggestions[activeIndex].symbol}` : undefined}
+          onFocus={() => setOpen(true)}
+          onChange={(event) => { onChange(event.target.value); setOpen(true); }}
+          onBlur={() => setOpen(false)}
+          onKeyDown={(event) => {
+            if (!suggestions.length) return;
+            if (event.key === 'ArrowDown') { event.preventDefault(); setOpen(true); setActiveIndex((index) => Math.min(suggestions.length - 1, index + 1)); }
+            else if (event.key === 'ArrowUp') { event.preventDefault(); setOpen(true); setActiveIndex((index) => Math.max(0, index - 1)); }
+            else if (event.key === 'Enter' && open && suggestions[activeIndex]) { event.preventDefault(); select(suggestions[activeIndex]); }
+            else if (event.key === 'Escape') { event.preventDefault(); setOpen(false); }
+          }}
+        />
+      </span>
+      {supportingText && <small className="trade-form-supporting">{supportingText}</small>}
+    </label>
+    {open && value.trim() && suggestions.length > 0 && <section id="security-suggestion-list" className="trade-suggestion-card" role="listbox" aria-label="候选证券">
+      <span className="trade-form-label">候选证券</span>
+      {suggestions.map((suggestion, index) => <button type="button" role="option" aria-selected={index === activeIndex} className={index === activeIndex ? 'active' : ''} id={`security-suggestion-${suggestion.market}-${suggestion.symbol}`} key={`${suggestion.market}:${suggestion.symbol}`} onMouseDown={(event) => event.preventDefault()} onClick={() => select(suggestion)}>
+        <span><strong>{suggestion.name}</strong><small>{suggestion.symbol} · {Market[suggestion.market as MarketType].label}</small></span><ChevronDown size={18} />
+      </button>)}
+    </section>}
+  </div>;
+}
+
 function ChoiceGroup({
   label,
   options,
@@ -112,6 +171,7 @@ export default function TransactionFormPage() {
   const isEdit = Boolean(id);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [estimatingFees, setEstimatingFees] = useState(false);
   const [showPlatformMenu, setShowPlatformMenu] = useState(false);
   const [activeLedgerId, setActiveLedgerId] = useState(1);
   const [tradeType, setTradeType] = useState<TradeType>('BUY');
@@ -129,7 +189,6 @@ export default function TransactionFormPage() {
   const [note, setNote] = useState('');
   const [investorName, setInvestorName] = useState('');
   const [lookupMessage, setLookupMessage] = useState('');
-  const [lookupState, setLookupState] = useState<'idle' | 'resolving' | 'resolved' | 'invalid'>('idle');
   const [underlying, setUnderlying] = useState('');
   const [optionType, setOptionType] = useState<'CALL' | 'PUT'>('CALL');
   const [strike, setStrike] = useState('');
@@ -140,6 +199,10 @@ export default function TransactionFormPage() {
   const [fxToCurrency, setFxToCurrency] = useState('CNY');
   const [fxToAmount, setFxToAmount] = useState('');
   const [fxRate, setFxRate] = useState('');
+  const [pairedTransfer, setPairedTransfer] = useState(searchParams.get('paired') === '1');
+  const [transferKind, setTransferKind] = useState<'CASH' | 'SECURITY'>('CASH');
+  const [transferTargetPlatform, setTransferTargetPlatform] = useState<PlatformType>('SCHWAB');
+  const [transferGroupId, setTransferGroupId] = useState<string | null>(null);
 
   const ledger = useLiveQuery(() => db.ledgers.get(activeLedgerId), [activeLedgerId]);
   const ledgerTransactionsQuery = useLiveQuery(() => db.transactions.where('ledgerId').equals(activeLedgerId).toArray(), [activeLedgerId]);
@@ -150,23 +213,32 @@ export default function TransactionFormPage() {
     const enabled = configurablePlatforms.filter((candidate) => enabledPlatforms.includes(candidate.code));
     return enabled.some((candidate) => candidate.code === platform) ? enabled : [...enabled, configurablePlatforms.find((candidate) => candidate.code === platform)].filter(Boolean) as typeof configurablePlatforms;
   }, [enabledPlatforms, platform]);
+  const transferPlatformOptions = useMemo(() => configurablePlatforms.filter((candidate) => candidate.code !== platform), [platform]);
   const partners = useMemo(() => (ledger?.partners ?? '').split(',').map((item) => item.trim()).filter(Boolean), [ledger?.partners]);
-  const isSecurity = isSecurityTrade(tradeType);
+  const isTransfer = tradeType === 'TRANSFER_OUT' || tradeType === 'TRANSFER_IN';
+  const isSecurity = isSecurityTrade(tradeType) || (pairedTransfer && isTransfer && transferKind === 'SECURITY');
 
-  const symbolSuggestions = useMemo(() => {
-    if (!isSecurity || assetType === 'OPTION' || symbol.trim().length < 1) return [];
-    const query = symbol.trim().toLowerCase();
-    const items = new Map<string, { symbol: string; name: string; market: MarketType }>();
-    [...quotes, ...ledgerTransactions.map((transaction) => ({ symbol: transaction.symbol, name: transaction.name, market: transaction.market }))]
-      .filter((item) => item.market === market && item.market !== 'CASH' && (item.symbol.toLowerCase().includes(query) || item.name.toLowerCase().includes(query)))
-      .forEach((item) => items.set(`${item.market}:${item.symbol}`, { symbol: item.symbol, name: item.name, market: item.market as MarketType }));
-    return [...items.values()].slice(0, 5);
-  }, [assetType, isSecurity, ledgerTransactions, market, quotes, symbol]);
+  const lookupIdentifier = assetType === 'OPTION' ? underlying : symbol;
+  const localSuggestions = useMemo(() => {
+    if (!isSecurity || !lookupIdentifier.trim() || market === 'CASH') return [];
+    return rankSecuritySuggestions(lookupIdentifier, [
+      ...quotes.filter((quote) => quote.market === market && quote.assetType === 'STOCK').map((quote) => ({ symbol: quote.symbol, name: quote.name || quote.symbol, market: quote.market, assetType: 'STOCK' as const })),
+      ...ledgerTransactions.filter((transaction) => transaction.market === market && transaction.assetType === 'STOCK' && transaction.symbol).map((transaction) => ({ symbol: transaction.symbol, name: transaction.name || transaction.symbol, market: transaction.market, assetType: 'STOCK' as const })),
+    ]);
+  }, [isSecurity, ledgerTransactions, lookupIdentifier, market, quotes]);
+  const [remoteSuggestions, setRemoteSuggestions] = useState<SecuritySuggestion[]>([]);
+  const securitySuggestions = useMemo(() => rankSecuritySuggestions(lookupIdentifier, [...localSuggestions, ...remoteSuggestions]), [localSuggestions, lookupIdentifier, remoteSuggestions]);
 
   useEffect(() => {
     if (!isEdit && activePlatform && enabledPlatforms.includes(activePlatform)) setPlatform(activePlatform);
     else if (!isEdit && !enabledPlatforms.includes(platform)) setPlatform(enabledPlatforms[0] ?? 'LONGBRIDGE');
   }, [activePlatform, enabledPlatforms, isEdit, platform]);
+
+  useEffect(() => {
+    if (pairedTransfer && isTransfer && transferTargetPlatform === platform) {
+      setTransferTargetPlatform((transferPlatformOptions[0]?.code ?? 'SCHWAB') as PlatformType);
+    }
+  }, [isTransfer, pairedTransfer, platform, transferPlatformOptions, transferTargetPlatform]);
 
   useEffect(() => {
     async function loadData() {
@@ -181,33 +253,43 @@ export default function TransactionFormPage() {
             navigate('/transactions');
             return;
           }
-          setTradeType(txn.tradeType);
-          setMarket(txn.market as MarketType);
-          if (!isSecurityTrade(txn.tradeType)) setCashCurrency(txn.market === 'US' ? 'USD' : txn.market === 'HK' ? 'HKD' : 'CNY');
-          setAssetType(txn.assetType || 'STOCK');
-          setPlatform(txn.platform as PlatformType);
-          setSymbol(txn.symbol);
-          setName(txn.name);
-          setPrice(String(txn.price));
-          setQuantity(String(txn.quantity));
-          setCommission(String(txn.commission));
-          setTax(String(txn.tax));
-          setTradeDate(txn.tradeDate);
-          setTradeTime(txn.tradeTime || '10:00:00');
-          setNote(txn.note || '');
-          setInvestorName(txn.investorName || '');
-          setUnderlying(txn.underlyingSymbol || '');
-          setOptionType(txn.optionType || 'CALL');
-          setStrike(txn.strikePrice == null ? '' : String(txn.strikePrice));
-          setExpiry(txn.expiryDate || '');
-          setFxFromCurrency(txn.fxFromCurrency || 'USD');
-          setFxFromAmount(txn.fxFromAmount == null ? '' : String(txn.fxFromAmount));
-          setFxToCurrency(txn.fxToCurrency || 'CNY');
-          setFxToAmount(txn.fxToAmount == null ? '' : String(txn.fxToAmount));
-          setFxRate(txn.fxRate == null ? '' : String(txn.fxRate));
+          const pair = txn.id && txn.transferGroupId ? await getTransferPairByTransactionId(txn.id) : null;
+          const source = pair?.out ?? txn;
+          const destination = pair?.in;
+          const isPaired = Boolean(pair);
+          setPairedTransfer(isPaired);
+          setTransferGroupId(pair?.groupId ?? null);
+          setTradeType(isPaired ? 'TRANSFER_OUT' : txn.tradeType);
+          setTransferKind(isPaired && source.symbol === 'CASH' ? 'CASH' : 'SECURITY');
+          setMarket(source.market as MarketType);
+          if (!isSecurityTrade(source.tradeType) && !isPaired) setCashCurrency(source.market === 'US' ? 'USD' : source.market === 'HK' ? 'HKD' : 'CNY');
+          if (isPaired && source.symbol === 'CASH') setCashCurrency(source.market === 'US' ? 'USD' : source.market === 'HK' ? 'HKD' : 'CNY');
+          setAssetType(source.assetType || 'STOCK');
+          setPlatform(source.platform as PlatformType);
+          setTransferTargetPlatform((destination?.platform ?? source.transferCounterpartyPlatform ?? 'SCHWAB') as PlatformType);
+          setSymbol(source.symbol);
+          setName(source.name);
+          setPrice(String(source.price));
+          setQuantity(String(source.quantity));
+          setCommission(String(source.commission));
+          setTax(String(source.tax));
+          setTradeDate(source.tradeDate);
+          setTradeTime(source.tradeTime || '10:00:00');
+          setNote(source.note || '');
+          setInvestorName(source.investorName || '');
+          setUnderlying(source.underlyingSymbol || '');
+          setOptionType(source.optionType || 'CALL');
+          setStrike(source.strikePrice == null ? '' : String(source.strikePrice));
+          setExpiry(source.expiryDate || '');
+          setFxFromCurrency(source.fxFromCurrency || 'USD');
+          setFxFromAmount(source.fxFromAmount == null ? '' : String(source.fxFromAmount));
+          setFxToCurrency(source.fxToCurrency || 'CNY');
+          setFxToAmount(source.fxToAmount == null ? '' : String(source.fxToAmount));
+          setFxRate(source.fxRate == null ? '' : String(source.fxRate));
         } else {
           const requestedType = searchParams.get('type') as TradeType | null;
           if (requestedType && requestedType in TradeTypeLabels) setTradeType(requestedType);
+          if (requestedType === 'TRANSFER_OUT') setPairedTransfer(searchParams.get('paired') === '1');
         }
       } catch (error) {
         console.error('加载交易表单数据失败', error);
@@ -219,33 +301,19 @@ export default function TransactionFormPage() {
   }, [id, isEdit, navigate, searchParams]);
 
   useEffect(() => {
-    if (!isSecurity || assetType === 'OPTION' || !symbol.trim()) {
-      setLookupState('idle');
-      setLookupMessage('');
-      return;
-    }
+    const query = lookupIdentifier.trim();
+    setRemoteSuggestions([]);
+    if (!isSecurity || !query || market === 'CASH') return;
     let cancelled = false;
-    setLookupState('resolving');
     const timer = window.setTimeout(() => {
-      void cacheService.resolveSecurityName(symbol.trim().toUpperCase(), market).then((resolvedName) => {
-        if (cancelled) return;
-        if (resolvedName) {
-          setName(resolvedName);
-          setLookupState('resolved');
-          setLookupMessage(`已识别：${resolvedName}`);
-        } else {
-          setLookupState('invalid');
-          setLookupMessage('未找到本地或已配置行情源中的证券');
-        }
+      void cacheService.suggestSecurities(query, market).then((items) => {
+        if (!cancelled) setRemoteSuggestions(items);
       }).catch(() => {
-        if (!cancelled) {
-          setLookupState('invalid');
-          setLookupMessage('证券名称暂时无法解析，可继续手动填写');
-        }
+        if (!cancelled) setRemoteSuggestions([]);
       });
     }, 350);
     return () => { cancelled = true; window.clearTimeout(timer); };
-  }, [assetType, isSecurity, market, symbol]);
+  }, [isSecurity, lookupIdentifier, market]);
 
   useEffect(() => {
     if (isSecurity) {
@@ -256,26 +324,103 @@ export default function TransactionFormPage() {
     setAssetType('STOCK');
   }, [isSecurity, market]);
 
-  const selectSuggestion = (suggestion: { symbol: string; name: string; market: MarketType }) => {
+  const selectSuggestion = (suggestion: SecuritySuggestion) => {
     setSymbol(suggestion.symbol);
     setName(suggestion.name);
-    setMarket(suggestion.market);
-    setLookupState('resolved');
+    setMarket(suggestion.market as MarketType);
     setLookupMessage(`已选择：${suggestion.name}`);
+  };
+
+  const selectUnderlyingSuggestion = (suggestion: SecuritySuggestion) => {
+    setUnderlying(suggestion.symbol);
+    setLookupMessage(`已选择正股：${suggestion.name}（${suggestion.symbol}）`);
+  };
+
+  const estimateFees = async () => {
+    if (estimatingFees) return;
+    setEstimatingFees(true);
+    try {
+      const selections = await settingRepo.get('platform_fee_plan_selections') as Record<string, string> | undefined;
+      const estimate = estimateTradeFees({
+        platform,
+        planId: selections?.[platform],
+        market,
+        assetType,
+        tradeType,
+        price: Number(price),
+        quantity: Number(quantity),
+        tradeDate,
+        transactions: ledgerTransactions,
+      });
+      if (!estimate.supported) {
+        window.alert(estimate.warnings.join('\n'));
+        return;
+      }
+      const detail = estimate.lines.length ? estimate.lines.map((line) => `${line.label}: ${line.amount.toFixed(2)}`).join('\n') : '佣金 / 平台费：0.00';
+      const warning = estimate.warnings.length ? `\n\n提示：${estimate.warnings.join(' ')}` : '';
+      const rule = estimate.ruleId ? `\n规则版本：${estimate.ruleId}` : '';
+      if (window.confirm(`${detail}\n\n佣金/平台费合计：${estimate.commission.toFixed(2)}\n税费合计：${estimate.tax.toFixed(2)}${rule}${warning}\n\n确认回填到表单？`)) {
+        setCommission(estimate.commission.toFixed(2));
+        setTax(estimate.tax.toFixed(2));
+      }
+    } finally {
+      setEstimatingFees(false);
+    }
   };
 
   const handleDelete = async () => {
     if (!isEdit || !id || !window.confirm('确认删除这条记录吗？删除后无法恢复。')) return;
-    await txnRepo.delete(Number(id));
-    navigate('/transactions');
+    try {
+      if (pairedTransfer && transferGroupId) await deleteTransferPairByTransactionId(Number(id));
+      else await txnRepo.delete(Number(id));
+      navigate('/transactions');
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '删除失败，请重试。');
+    }
   };
 
   const handleSubmit = async (event: React.FormEvent) => {
     event.preventDefault();
     if (saving) return;
+    setSaving(true);
+    try {
+      if (pairedTransfer && isTransfer) {
+        const isSecurityTransfer = transferKind === 'SECURITY';
+        const optionSymbol = `${underlying.trim().toUpperCase()} ${expiry.replace(/-/g, '').substring(2)}${optionType.charAt(0)}${strike}`;
+        const transferSymbol = isSecurityTransfer ? (assetType === 'OPTION' ? optionSymbol : symbol.trim().toUpperCase()) : 'CASH';
+        const transferName = isSecurityTransfer
+          ? (assetType === 'OPTION' ? `${underlying.trim().toUpperCase()} ${expiry} ${optionType === 'CALL' ? 'CALL' : 'PUT'} $${strike}` : name.trim() || transferSymbol)
+          : '现金';
+        const draft = {
+          ledgerId: activeLedgerId,
+          sourcePlatform: platform,
+          targetPlatform: transferTargetPlatform,
+          market: isSecurityTransfer ? market : currencyMarket(cashCurrency),
+          symbol: transferSymbol,
+          name: transferName,
+          tradeDate,
+          tradeTime: tradeTime.length === 5 ? `${tradeTime}:00` : tradeTime,
+          isSecurity: isSecurityTransfer,
+          quantity: isSecurityTransfer ? Number(quantity) || 0 : 1,
+          amount: isSecurityTransfer ? undefined : Number(price) || 0,
+          assetType: isSecurityTransfer ? assetType : 'STOCK',
+          underlyingSymbol: isSecurityTransfer && assetType === 'OPTION' ? underlying.trim().toUpperCase() : null,
+          expiryDate: isSecurityTransfer && assetType === 'OPTION' ? expiry : null,
+          strikePrice: isSecurityTransfer && assetType === 'OPTION' ? Number(strike) || null : null,
+          optionType: isSecurityTransfer && assetType === 'OPTION' ? optionType : null,
+          commission: Number(commission) || 0,
+          tax: Number(tax) || 0,
+          note: note.trim(),
+        } as const;
+        if (transferGroupId) await updateTransferPair(transferGroupId, draft);
+        else await createTransferPair(draft);
+      } else {
     const optionSymbol = `${underlying.trim().toUpperCase()} ${expiry.replace(/-/g, '').substring(2)}${optionType.charAt(0)}${strike}`;
     const computedSymbol = isSecurity ? (assetType === 'OPTION' ? optionSymbol : symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? 'FX' : 'CASH');
-    const computedName = isSecurity ? (assetType === 'OPTION' ? `${underlying.trim().toUpperCase()} ${expiry} ${optionType === 'CALL' ? 'CALL' : 'PUT'} $${strike}` : name.trim() || symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? '外汇兑换' : tradeType === 'DEPOSIT' ? '现金' : TradeTypeLabels[tradeType]);
+    const resolvedName = isSecurity && assetType !== 'OPTION' && !name.trim() && symbol.trim()
+      ? await cacheService.resolveSecurityName(symbol.trim().toUpperCase(), market).catch(() => null)
+      : null;
+    const computedName = isSecurity ? (assetType === 'OPTION' ? `${underlying.trim().toUpperCase()} ${expiry} ${optionType === 'CALL' ? 'CALL' : 'PUT'} $${strike}` : resolvedName || name.trim() || symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? '外汇兑换' : tradeType === 'DEPOSIT' ? '现金' : TradeTypeLabels[tradeType]);
     const parsedData = {
       ledgerId: activeLedgerId,
       tradeType,
@@ -301,9 +446,11 @@ export default function TransactionFormPage() {
       fxFromCurrency: tradeType === 'FX_CONVERSION' ? fxFromCurrency : null,
       fxFromAmount: tradeType === 'FX_CONVERSION' ? Number(fxFromAmount) || null : null,
       fxToCurrency: tradeType === 'FX_CONVERSION' ? fxToCurrency : null,
-      fxToAmount: tradeType === 'FX_CONVERSION' ? Number(fxToAmount) || null : null,
-      fxRate: tradeType === 'FX_CONVERSION' ? Number(fxRate) || null : null,
-    };
+       fxToAmount: tradeType === 'FX_CONVERSION' ? Number(fxToAmount) || null : null,
+       fxRate: tradeType === 'FX_CONVERSION' ? Number(fxRate) || null : null,
+       transferGroupId: null,
+       transferCounterpartyPlatform: null,
+     };
     const result = transactionSchema.safeParse(parsedData);
     if (!result.success) {
       window.alert(`请检查表单：\n${result.error.issues.map((issue) => issue.message).join('\n')}`);
@@ -321,13 +468,14 @@ export default function TransactionFormPage() {
       fxFromCurrency: result.data.fxFromCurrency ?? null,
       fxFromAmount: result.data.fxFromAmount ?? null,
       fxToCurrency: result.data.fxToCurrency ?? null,
-      fxToAmount: result.data.fxToAmount ?? null,
-      fxRate: result.data.fxRate ?? null,
-    };
-    setSaving(true);
-    try {
+       fxToAmount: result.data.fxToAmount ?? null,
+       fxRate: result.data.fxRate ?? null,
+       transferGroupId: null,
+       transferCounterpartyPlatform: null,
+     };
       if (isEdit && id) await txnRepo.update(Number(id), payload);
       else await txnRepo.create(payload);
+      }
       if (await settingRepo.get('auto_sync_after_transaction')) {
         await marketCacheManager.detectAndQueueMissingRanges();
         await MarketTaskExecutor.startOrWakeMarketExecutor();
@@ -335,7 +483,7 @@ export default function TransactionFormPage() {
       navigate('/transactions');
     } catch (error) {
       console.error('保存交易失败', error);
-      window.alert('保存失败，请检查输入或重试');
+      window.alert(error instanceof TransferValidationError ? error.message : '保存失败，请检查输入或重试');
     } finally {
       setSaving(false);
     }
@@ -346,7 +494,11 @@ export default function TransactionFormPage() {
   const typeLabel = isEdit ? '编辑记录' : '录入交易';
   const tone = typeTone(tradeType);
   const securityIdentifier = assetType === 'OPTION' ? underlying : symbol;
-  const canSubmit = Boolean(tradeDate && tradeTime && (isSecurity ? securityIdentifier.trim() && price && quantity : price) && (assetType !== 'OPTION' || (underlying && expiry && strike)) && lookupState !== 'invalid');
+  const canSubmit = pairedTransfer && isTransfer
+    ? Boolean(tradeDate && tradeTime && transferTargetPlatform !== platform && (transferKind === 'SECURITY'
+      ? securityIdentifier.trim() && quantity && (assetType !== 'OPTION' || (underlying && expiry && strike))
+      : price))
+    : Boolean(tradeDate && tradeTime && (isSecurity ? securityIdentifier.trim() && price && quantity : price) && (assetType !== 'OPTION' || (underlying && expiry && strike)));
 
   return <div className="trade-form-page">
     <header className="trade-form-header">
@@ -369,25 +521,45 @@ export default function TransactionFormPage() {
         </div>}
       </section>
 
-      {isSecurity ? <>
+      {pairedTransfer && isTransfer ? <>
+        <ChoiceGroup label="转仓类型" value={transferKind} onChange={(value) => setTransferKind(value as 'CASH' | 'SECURITY')} options={[{ value: 'CASH', label: '现金' }, { value: 'SECURITY', label: '证券' }]} />
+        <ChoiceGroup label="目标平台" value={transferTargetPlatform} onChange={(value) => setTransferTargetPlatform(value as PlatformType)} options={transferPlatformOptions.map((item) => ({ value: item.code, label: item.label }))} />
+        {transferKind === 'SECURITY' ? <>
+          <ChoiceGroup label="市场" value={market} onChange={(value) => setMarket(value as MarketType)} options={SECURITY_MARKETS.map((value) => ({ value, label: Market[value].label }))} />
+          {(market === 'US' || market === 'HK') && <ChoiceGroup label="资产类型" value={assetType} onChange={(value) => setAssetType(value as 'STOCK' | 'OPTION')} options={[{ value: 'STOCK', label: '股票' }, { value: 'OPTION', label: '期权' }]} />}
+          {assetType === 'OPTION' && (market === 'US' || market === 'HK') ? <>
+            <SecurityAutocompleteField label="正股代码" value={underlying} onChange={(value) => { setUnderlying(value.toUpperCase()); setLookupMessage(''); }} suggestions={securitySuggestions} onSelect={selectUnderlyingSuggestion} supportingText={lookupMessage || (securitySuggestions.length ? `找到 ${securitySuggestions.length} 条候选，点一下可自动补全` : '')} optionUnderlying />
+            <div className="trade-form-grid">
+              <FieldBlock label="到期日" value={expiry} onChange={setExpiry} type="date" required />
+              <FieldBlock label="行权价" value={strike} onChange={setStrike} type="number" step="0.0001" required />
+            </div>
+            <ChoiceGroup label="期权类型" value={optionType} onChange={(value) => setOptionType(value as 'CALL' | 'PUT')} options={[{ value: 'CALL', label: '看涨 Call' }, { value: 'PUT', label: '看跌 Put' }]} />
+          </> : <SecurityAutocompleteField label="证券代码 / 名称" value={symbol} onChange={(value) => { setSymbol(value.toUpperCase()); setLookupMessage(''); }} suggestions={securitySuggestions} onSelect={selectSuggestion} supportingText={lookupMessage || (securitySuggestions.length ? `找到 ${securitySuggestions.length} 条候选，点一下可自动补全` : '')} />}
+          <FieldBlock label="转仓数量" value={quantity} onChange={setQuantity} type="number" step="0.0001" required supportingText="保存时按来源平台当前平均成本自动计算成本价。" />
+          <section className="trade-fee-card"><div className="trade-fee-heading"><span>转仓费用（从来源平台扣除）</span></div><div className="trade-form-grid"><FieldBlock label="佣金" value={commission} onChange={setCommission} type="number" step="0.01" /><FieldBlock label="税费" value={tax} onChange={setTax} type="number" step="0.01" /></div></section>
+        </> : <>
+          <ChoiceGroup label="货币种类" value={cashCurrency} onChange={(value) => setCashCurrency(value as CurrencyType)} options={Object.values(DisplayCurrency).map((currency) => ({ value: currency.code, label: currency.label }))} />
+          <FieldBlock label="转仓金额" value={price} onChange={(value) => { setPrice(value); setQuantity('1'); }} type="number" step="0.01" supportingText={`来源平台需有足够的${DisplayCurrency[cashCurrency].label}可用现金。`} required />
+          <section className="trade-fee-card"><div className="trade-fee-heading"><span>转仓费用（从来源平台扣除）</span></div><div className="trade-form-grid"><FieldBlock label="佣金" value={commission} onChange={setCommission} type="number" step="0.01" /><FieldBlock label="税费" value={tax} onChange={setTax} type="number" step="0.01" /></div></section>
+        </>}
+      </> : isSecurity ? <>
         <ChoiceGroup label="市场" value={market} onChange={(value) => setMarket(value as MarketType)} options={SECURITY_MARKETS.map((value) => ({ value, label: Market[value].label }))} />
         {(market === 'US' || market === 'HK') && <ChoiceGroup label="资产类型" value={assetType} onChange={(value) => setAssetType(value as 'STOCK' | 'OPTION')} options={[{ value: 'STOCK', label: '股票' }, { value: 'OPTION', label: '期权' }]} />}
         {assetType === 'OPTION' && (market === 'US' || market === 'HK') ? <>
-          <FieldBlock label="正股代码" value={underlying} onChange={(value) => setUnderlying(value.toUpperCase())} supportingText={lookupMessage} required />
+          <SecurityAutocompleteField label="正股代码" value={underlying} onChange={(value) => { setUnderlying(value.toUpperCase()); setLookupMessage(''); }} suggestions={securitySuggestions} onSelect={selectUnderlyingSuggestion} supportingText={lookupMessage || (securitySuggestions.length ? `找到 ${securitySuggestions.length} 条候选，点一下可自动补全` : '')} optionUnderlying />
           <div className="trade-form-grid">
             <FieldBlock label="到期日" value={expiry} onChange={setExpiry} type="date" required />
             <FieldBlock label="行权价" value={strike} onChange={setStrike} type="number" step="0.0001" required />
           </div>
           <ChoiceGroup label="期权类型" value={optionType} onChange={(value) => setOptionType(value as 'CALL' | 'PUT')} options={[{ value: 'CALL', label: '看涨 Call' }, { value: 'PUT', label: '看跌 Put' }]} />
         </> : <>
-          <FieldBlock label="证券代码 / 名称" value={symbol} onChange={(value) => setSymbol(value.toUpperCase())} supportingText={lookupMessage} required />
-          {symbolSuggestions.length > 0 && <section className="trade-suggestion-card"><span className="trade-form-label">候选证券</span>{symbolSuggestions.map((suggestion) => <button type="button" key={`${suggestion.market}:${suggestion.symbol}`} onClick={() => selectSuggestion(suggestion)}><span><strong>{suggestion.name}</strong><small>{suggestion.symbol} · {Market[suggestion.market].label}</small></span><ChevronDown size={18} /></button>)}</section>}
+          <SecurityAutocompleteField label="证券代码 / 名称" value={symbol} onChange={(value) => { setSymbol(value.toUpperCase()); setLookupMessage(''); }} suggestions={securitySuggestions} onSelect={selectSuggestion} supportingText={lookupMessage || (securitySuggestions.length ? `找到 ${securitySuggestions.length} 条候选，点一下可自动补全` : '')} />
         </>}
         <div className="trade-form-grid">
           <FieldBlock label={tradeType === 'SPLIT' ? '折算比例' : '成交价格'} value={price} onChange={(value) => { setPrice(value); if (tradeType === 'SPLIT') setQuantity('1'); }} type="number" step="0.0001" required />
           {tradeType !== 'SPLIT' && <FieldBlock label={tradeType === 'EXPIRE' ? '过期数量' : '成交数量'} value={quantity} onChange={(value) => { setQuantity(value); if (tradeType === 'EXPIRE') setPrice('0'); }} type="number" step="0.0001" required />}
         </div>
-        {tradeType !== 'SPLIT' && <section className="trade-fee-card"><div className="trade-fee-heading"><span>手续费 / 税费</span><button type="button" className="trade-fee-estimate" disabled title="自动费用估算待实现">自动估算（待实现）</button></div><div className="trade-form-grid"><FieldBlock label="佣金" value={commission} onChange={setCommission} type="number" step="0.01" /><FieldBlock label="税费" value={tax} onChange={setTax} type="number" step="0.01" /></div></section>}
+        {tradeType !== 'SPLIT' && <section className="trade-fee-card"><div className="trade-fee-heading"><span>手续费 / 税费</span>{(tradeType === 'BUY' || tradeType === 'SELL') && <button type="button" className="trade-fee-estimate" disabled={estimatingFees} onClick={() => void estimateFees()}>{estimatingFees ? '估算中…' : '自动估算'}</button>}</div><div className="trade-form-grid"><FieldBlock label="佣金" value={commission} onChange={setCommission} type="number" step="0.01" /><FieldBlock label="税费" value={tax} onChange={setTax} type="number" step="0.01" /></div></section>}
       </> : <>
         {ledger?.type === 'JOINT' && (tradeType === 'DEPOSIT' || tradeType === 'WITHDRAW') && partners.length > 0 && <ChoiceGroup label={tradeType === 'DEPOSIT' ? '出资人（入金人）' : '撤资人（出金人）'} value={investorName || partners[0]} onChange={setInvestorName} options={partners.map((partner) => ({ value: partner, label: partner }))} />}
         <ChoiceGroup label="货币种类" value={cashCurrency} onChange={(value) => setCashCurrency(value as CurrencyType)} options={Object.values(DisplayCurrency).map((currency) => ({ value: currency.code, label: currency.label }))} />

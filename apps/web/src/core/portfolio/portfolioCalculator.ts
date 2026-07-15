@@ -27,6 +27,19 @@ export function convertToCny(value: number, market: MarketType, exchangeRates: E
   return value * rateToCny(exchangeRates, market);
 }
 
+/** User-entered quantities use a 0.0001 step across the Web and Android apps. */
+export const QUANTITY_DECIMAL_PLACES = 4;
+
+export function normalizeQuantity(value: number): number {
+  const scale = 10 ** QUANTITY_DECIMAL_PLACES;
+  const normalized = Math.round((value + Number.EPSILON) * scale) / scale;
+  return Object.is(normalized, -0) ? 0 : normalized;
+}
+
+export function formatQuantity(value: number): string {
+  return normalizeQuantity(value).toFixed(QUANTITY_DECIMAL_PLACES).replace(/\.?(0+)$/, '');
+}
+
 // 3. 平台证券辅助规则 (PortfolioSecurityRules)
 export const PortfolioSecurityRules = {
   US_TIMEZONE_CUTOFF: '06:00',
@@ -119,6 +132,20 @@ export interface PortfolioSnapshot {
   sellTradeCount: number;
 }
 
+function completeTransferGroupIds(transactions: Transaction[]): string[] {
+  const groups = new Map<string, { incoming: number; outgoing: number }>();
+  transactions.forEach((transaction) => {
+    if (!transaction.transferGroupId) return;
+    const group = groups.get(transaction.transferGroupId) ?? { incoming: 0, outgoing: 0 };
+    if (transaction.tradeType === 'TRANSFER_IN') group.incoming += 1;
+    if (transaction.tradeType === 'TRANSFER_OUT') group.outgoing += 1;
+    groups.set(transaction.transferGroupId, group);
+  });
+  return [...groups.entries()]
+    .filter(([, group]) => group.incoming === 1 && group.outgoing === 1)
+    .map(([groupId]) => groupId);
+}
+
 // 5. 核心计算类 (PortfolioCalculator)
 export class PortfolioCalculator {
   calculate(
@@ -136,6 +163,7 @@ export class PortfolioCalculator {
     let buyTradeCount = 0;
     let sellTradeCount = 0;
     const appliedSplitEvents = new Set<string>();
+    const completeTransferGroups = new Set(completeTransferGroupIds(transactions));
 
     // 排序逻辑：有效交易日期升序 -> 交易时间升序 -> 创建时间升序
     const sortedTrades = [...transactions].sort((a, b) => {
@@ -236,7 +264,7 @@ export class PortfolioCalculator {
               averageCost: nextQuantity === 0.0 ? 0.0 : nextRemaining / (nextQuantity * mult)
             };
           }
-          totalDepositCny += amountCny;
+          if (!transaction.transferGroupId || !completeTransferGroups.has(transaction.transferGroupId)) totalDepositCny += amountCny;
           break;
         }
 
@@ -258,7 +286,13 @@ export class PortfolioCalculator {
               averageCost: nextQuantity === 0.0 ? 0.0 : nextRemaining / (nextQuantity * mult)
             };
           }
-          totalWithdrawCny += amountCny;
+          if (!transaction.transferGroupId || !completeTransferGroups.has(transaction.transferGroupId)) totalWithdrawCny += amountCny;
+          const transferFees = transaction.commission + transaction.tax;
+          if (transferFees > 0) {
+            totalCommissionCny += convertToCny(transaction.commission, transaction.market, exchangeRates);
+            totalTaxCny += convertToCny(transaction.tax, transaction.market, exchangeRates);
+            cashBalanceCny -= convertToCny(transferFees, transaction.market, exchangeRates);
+          }
           break;
         }
 
@@ -518,9 +552,9 @@ export class PortfolioCalculator {
     if (!current) return;
 
     const qtyDelta = transaction.quantity;
-    const nextQuantity = current.quantity > 0.0 
+    const nextQuantity = this.cleanQuantity(current.quantity > 0.0
       ? Math.max(0.0, current.quantity - qtyDelta)
-      : Math.min(0.0, current.quantity + qtyDelta);
+      : Math.min(0.0, current.quantity + qtyDelta));
 
     const fraction = current.quantity === 0.0 
       ? 1.0 
@@ -558,6 +592,7 @@ export class PortfolioCalculator {
   }
 
   private cleanQuantity(qty: number): number {
-    return this.isAlmostZero(qty) ? 0.0 : qty;
+    const normalized = normalizeQuantity(qty);
+    return this.isAlmostZero(normalized) ? 0.0 : normalized;
   }
 }

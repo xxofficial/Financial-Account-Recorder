@@ -412,7 +412,14 @@ export function canonicalTransactionString(transaction: Record<string, unknown>)
     'tradeTime', 'price', 'quantity', 'commission', 'tax', 'assetType', 'contractKey',
     'fxFromCurrency', 'fxFromAmount', 'fxToCurrency', 'fxToAmount', 'fxRate',
   ];
-  return fields.map((field) => `${field}=${String(transaction[field] ?? '')}`).join('|');
+  const base = fields.map((field) => `${field}=${String(transaction[field] ?? '')}`);
+  // Keep legacy fingerprints stable while making new paired transfers
+  // content-addressable by their linkage metadata.
+  if (transaction.transferGroupId || transaction.transferCounterpartyPlatform) {
+    base.push(`transferGroupId=${String(transaction.transferGroupId ?? '')}`);
+    base.push(`transferCounterpartyPlatform=${String(transaction.transferCounterpartyPlatform ?? '')}`);
+  }
+  return base.join('|');
 }
 
 export async function createTransactionFingerprint(transaction: Record<string, unknown>): Promise<string> {

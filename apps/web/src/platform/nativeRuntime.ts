@@ -91,10 +91,16 @@ export const nativeEmailSync = registerPlugin<NativeEmailSyncPlugin>('EmailSync'
 export const nativeAppUpdate = registerPlugin<NativeAppUpdatePlugin>('AppUpdate');
 const nativeMarket = registerPlugin<NativeMarketPlugin>('NativeMarket');
 
-export const nativeSecretKeyForProvider = (provider: 'itick' | 'twelvedata' | 'marketdata') => `market_${provider}_api_key`;
+export const nativeSecretKeyForProvider = (provider: 'marketdata') => `market_${provider}_api_key`;
 export const nativeSecretKeyForStatement = (platform: string) => `statement_pdf_password_${platform}`;
-export const nativeSecretPlaceholder = (provider: 'itick' | 'twelvedata' | 'marketdata') =>
+export const nativeSecretPlaceholder = (provider: 'marketdata') =>
   `__RECORDER_SECRET_${nativeSecretKeyForProvider(provider)}__`;
+
+/** Idempotent Android cleanup for keys retired from the app configuration. */
+export async function clearRetiredMarketProviderSecrets(): Promise<void> {
+  if (!isAndroidNativeRuntime()) return;
+  await Promise.allSettled(['market_itick_api_key', 'market_twelvedata_api_key'].map((key) => nativeSecret.clear({ key })));
+}
 
 function toHeadersRecord(headers?: HeadersInit): Record<string, string> {
   if (!headers) return {};

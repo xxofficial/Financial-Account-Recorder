@@ -11,7 +11,7 @@ import { HistoricalGapAnalyzer } from './HistoricalGapAnalyzer';
 import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
 import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
-import { latestExpectedDailyCloseDate } from './marketDataCacheService';
+import { resolveLatestExpectedDailyCloseDate } from './marketDataCacheService';
 
 export interface ImportMarketCacheOptions {
   overwrite?: boolean;
@@ -70,10 +70,10 @@ export interface HistoricalRangeRequest {
  * 区间从首笔可报价交易日延伸到该市场本地的今天。
  * 过滤掉现金、利息、转账、外汇等非行情记录。
  */
-export function getHistoricalRangeRequestsFromTransactions(
+export async function getHistoricalRangeRequestsFromTransactions(
   transactions: Transaction[],
   referenceAt = new Date(),
-): HistoricalRangeRequest[] {
+): Promise<HistoricalRangeRequest[]> {
   // Reuse the same quantity semantics as the portfolio page (including
   // transfers, splits, options and short positions) when deciding whether a
   // security remains open today.
@@ -109,7 +109,7 @@ export function getHistoricalRangeRequestsFromTransactions(
   for (const [key, info] of groups) {
     const dates = Array.from(info.dates).sort();
     if (dates.length === 0) continue;
-    const latestCloseDate = latestExpectedDailyCloseDate(info.market, referenceAt);
+    const latestCloseDate = await resolveLatestExpectedDailyCloseDate(info.market, referenceAt);
     requests.push({
       securityKey: key,
       symbol: info.symbol,
@@ -495,7 +495,7 @@ export class MarketCacheManager {
    */
   async detectAndQueueMissingRanges(referenceAt = new Date()): Promise<{ queued: number; items: { securityKey: string; fromDate: string; toDate: string }[] }> {
     const transactions = await db.transactions.toArray();
-    const requests = getHistoricalRangeRequestsFromTransactions(transactions, referenceAt);
+    const requests = await getHistoricalRangeRequestsFromTransactions(transactions, referenceAt);
 
     const newItems: MarketWorkItem[] = [];
     const result: { securityKey: string; fromDate: string; toDate: string }[] = [];
@@ -693,7 +693,7 @@ export class MarketCacheManager {
     const securityKey = `${market}:${symbol}`;
 
     const transactions = await db.transactions.toArray();
-    const requests = getHistoricalRangeRequestsFromTransactions(transactions);
+    const requests = await getHistoricalRangeRequestsFromTransactions(transactions);
     const request = requests.find((r) => r.securityKey === securityKey);
     if (!request) return;
 

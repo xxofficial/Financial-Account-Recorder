@@ -11,13 +11,11 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../db/localDb';
-import { TransactionRepository } from '../db/repositories';
 import { Market, BrokerPlatform, TradeTypeLabels, type MarketType, type PlatformType, type TradeType } from '../shared/models';
 import { PlatformMark, useAppShell } from '../app/AppShell';
+import { getTransferPairByTransactionId } from '../core/transfers/transferService';
 import type { Transaction, Ledger } from '../db/schema';
 import type { ReactNode } from 'react';
-
-const txnRepo = new TransactionRepository();
 
 type CashFlowFilter = 'ALL' | 'INFLOW' | 'OUTFLOW';
 type CurrencyFilter = 'ALL' | 'USD' | 'HKD' | 'CNY';
@@ -207,6 +205,8 @@ export default function TransactionsPage() {
   const rawTransactions = useMemo(() => liveTransactions ?? [], [liveTransactions]);
 
   const [searchTerm, setSearchTerm] = useState('');
+  const [searchSuggestionOpen, setSearchSuggestionOpen] = useState(false);
+  const [activeSearchSuggestion, setActiveSearchSuggestion] = useState(0);
   const [startDate, setStartDate] = useState('');
   const [endDate, setEndDate] = useState('');
   const [cashFilter, setCashFilter] = useState<CashFlowFilter>('ALL');
@@ -224,6 +224,23 @@ export default function TransactionsPage() {
   const [pendingCash, setPendingCash] = useState<CashFlowFilter>('ALL');
   const [pendingCurrency, setPendingCurrency] = useState<CurrencyFilter>('ALL');
   const [pendingScene, setPendingScene] = useState<SceneFilter>('ALL');
+
+  const searchSuggestions = useMemo(() => {
+    const keyword = searchTerm.trim().toLowerCase();
+    if (!keyword) return [];
+    const candidates = new Map<string, { symbol: string; name: string; market: MarketType }>();
+    rawTransactions
+      .filter((tx) => tx.market !== 'CASH' && tx.assetType === 'STOCK' && tx.symbol && (tx.symbol.toLowerCase().includes(keyword) || tx.name.toLowerCase().includes(keyword)))
+      .forEach((tx) => candidates.set(`${tx.market}:${tx.symbol.toUpperCase()}`, { symbol: tx.symbol.toUpperCase(), name: tx.name || tx.symbol, market: tx.market as MarketType }));
+    return [...candidates.values()]
+      .sort((left, right) => {
+        const rank = (item: typeof left) => item.symbol.toLowerCase() === keyword ? 0 : item.symbol.toLowerCase().startsWith(keyword) ? 1 : 2;
+        return rank(left) - rank(right) || left.symbol.localeCompare(right.symbol) || left.name.localeCompare(right.name, 'zh-Hans-CN');
+      })
+      .slice(0, 6);
+  }, [rawTransactions, searchTerm]);
+
+  useEffect(() => setActiveSearchSuggestion(0), [searchTerm, searchSuggestions.length]);
 
   const filtered = useMemo(() => rawTransactions.filter((tx) => {
     const keyword = searchTerm.trim().toLowerCase();
@@ -255,16 +272,53 @@ export default function TransactionsPage() {
     setStartDate(normalized[0]); setEndDate(normalized[1]); setShowDateSheet(false);
   };
   const applyCategoryFilters = () => { setCashFilter(pendingCash); setCurrencyFilter(pendingCurrency); setSceneFilter(pendingScene); setShowFilterSheet(false); };
-  const deleteSelected = async () => { await Promise.all([...selectedIds].map((id) => txnRepo.delete(id))); setShowDeleteConfirm(false); exitBatchMode(); };
+  const selectedTransactionIds = async () => {
+    const ids = new Set<number>(selectedIds);
+    for (const id of selectedIds) {
+      const pair = await getTransferPairByTransactionId(id);
+      if (pair?.out.id) ids.add(pair.out.id);
+      if (pair?.in.id) ids.add(pair.in.id);
+    }
+    return [...ids];
+  };
+  const deleteSelected = async () => {
+    try {
+      const ids = await selectedTransactionIds();
+      await db.transaction('rw', [db.transactions], async () => { await db.transactions.bulkDelete(ids); });
+      setShowDeleteConfirm(false); exitBatchMode();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '删除失败，请重试。');
+    }
+  };
   const moveSelected = useCallback(async (targetLedgerId: number) => {
-    await Promise.all([...selectedIds].map((id) => txnRepo.update(id, { ledgerId: targetLedgerId })));
-    setShowMoveLedger(false); exitBatchMode();
+    try {
+      const ids = new Set<number>(selectedIds);
+      for (const id of selectedIds) {
+        const pair = await getTransferPairByTransactionId(id);
+        if (pair?.out.id) ids.add(pair.out.id);
+        if (pair?.in.id) ids.add(pair.in.id);
+      }
+      await db.transaction('rw', [db.transactions], async () => {
+        await Promise.all([...ids].map((id) => db.transactions.update(id, { ledgerId: targetLedgerId, updatedAt: Date.now() })));
+      });
+      setShowMoveLedger(false); exitBatchMode();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '迁移失败，请重试。');
+    }
   }, [selectedIds]);
 
   return <div className="page tab-page transactions-page">
     <div className="transactions-filter-bar">
       {showBatchMode ? <div className="transactions-batch-header"><button type="button" className="transactions-filter-button" onClick={selectAll}>{selectedIds.size === filtered.length && filtered.length > 0 ? '取消全选' : '全选'}</button><span>已选 {selectedIds.size} 笔</span><button type="button" className="transactions-filter-button" onClick={exitBatchMode}>取消</button></div> : <>
-        <label className="transactions-search"><Search size={17} aria-hidden="true" /><input value={searchTerm} onChange={(event) => setSearchTerm(event.target.value)} placeholder="搜索证券名称或代码" /></label>
+        <div className="transactions-search-box"><label className="transactions-search"><Search size={17} aria-hidden="true" /><input value={searchTerm} role="combobox" aria-autocomplete="list" aria-expanded={searchSuggestionOpen && searchSuggestions.length > 0} aria-controls="transactions-search-suggestions" aria-activedescendant={searchSuggestionOpen && searchSuggestions[activeSearchSuggestion] ? `transactions-search-${searchSuggestions[activeSearchSuggestion].market}-${searchSuggestions[activeSearchSuggestion].symbol}` : undefined} onFocus={() => setSearchSuggestionOpen(true)} onBlur={() => setSearchSuggestionOpen(false)} onChange={(event) => { setSearchTerm(event.target.value); setSearchSuggestionOpen(true); }} onKeyDown={(event) => {
+          if (!searchSuggestions.length) return;
+          if (event.key === 'ArrowDown') { event.preventDefault(); setSearchSuggestionOpen(true); setActiveSearchSuggestion((index) => Math.min(searchSuggestions.length - 1, index + 1)); }
+          else if (event.key === 'ArrowUp') { event.preventDefault(); setSearchSuggestionOpen(true); setActiveSearchSuggestion((index) => Math.max(0, index - 1)); }
+          else if (event.key === 'Enter' && searchSuggestionOpen && searchSuggestions[activeSearchSuggestion]) { event.preventDefault(); setSearchTerm(searchSuggestions[activeSearchSuggestion].symbol); setSearchSuggestionOpen(false); }
+          else if (event.key === 'Escape') { event.preventDefault(); setSearchSuggestionOpen(false); }
+        }} placeholder="搜索证券名称或代码" /></label>
+        {searchSuggestionOpen && searchSuggestions.length > 0 && <div id="transactions-search-suggestions" className="transactions-search-suggestions" role="listbox" aria-label="流水证券推荐">{searchSuggestions.map((suggestion, index) => <button type="button" role="option" aria-selected={index === activeSearchSuggestion} className={index === activeSearchSuggestion ? 'active' : ''} id={`transactions-search-${suggestion.market}-${suggestion.symbol}`} key={`${suggestion.market}:${suggestion.symbol}`} onMouseDown={(event) => event.preventDefault()} onClick={() => { setSearchTerm(suggestion.symbol); setSearchSuggestionOpen(false); }}><strong>{suggestion.name}</strong><small>{suggestion.symbol} · {Market[suggestion.market].label}</small></button>)}</div>}
+        </div>
         <button type="button" className={`transactions-filter-button ${startDate || endDate ? 'active' : ''}`} onClick={() => { setPendingStart(startDate); setPendingEnd(endDate); setPendingDateSide('start'); setShowDateSheet(true); }}><CalendarDays size={17} />日期</button>
         <button type="button" className={`transactions-filter-button ${hasFilters && !(startDate || endDate) ? 'active' : ''}`} onClick={() => { setPendingCash(cashFilter); setPendingCurrency(currencyFilter); setPendingScene(sceneFilter); setShowFilterSheet(true); }}><Filter size={17} />筛选</button>
       </>}

@@ -1,8 +1,7 @@
 import { db } from '../../db/localDb';
 import { MarketProviderQuotaState, QuoteSnapshot, MarketRequestStatus } from '../../db/schema';
 import { HistoricalRequestPlanner, INITIAL_CAPABILITIES, HistoricalRequestPlan } from './HistoricalRequestPlanner';
-import { ItickProvider } from './itickProvider';
-import { TwelvedataProvider } from './twelvedataProvider';
+import { StockSdkProvider } from './stockSdkProvider';
 import { AndroidDefaultMarketProvider } from './androidDefaultMarketProvider';
 import { MarketDataAppProvider } from './marketDataProvider';
 import { MarketDataProvider } from './marketDataProvider';
@@ -11,8 +10,7 @@ import { logMarketRequest, MarketDataResult } from './marketRequestHelper';
 // Singletons
 const providers: Record<string, MarketDataProvider> = {
   'android-default': new AndroidDefaultMarketProvider(),
-  itick: new ItickProvider(),
-  twelvedata: new TwelvedataProvider(),
+  'stock-sdk': new StockSdkProvider(),
   marketdata: new MarketDataAppProvider()
 };
 
@@ -313,14 +311,7 @@ export class MarketTaskExecutor {
 
     // Parse headers if available
     if (response && response.headers) {
-      if (providerId === 'twelvedata') {
-        const left = response.headers.get('api-credits-left');
-        const used = response.headers.get('api-credits-used');
-        if (left) remaining = parseInt(left, 10);
-        if (used) consumedLastRequest = parseInt(used, 10);
-        source = 'official_header';
-        confidence = 'high';
-      } else if (providerId === 'marketdata') {
+      if (providerId === 'marketdata') {
         const lim = response.headers.get('X-Api-Ratelimit-Limit');
         const rem = response.headers.get('X-Api-Ratelimit-Remaining');
         const reset = response.headers.get('X-Api-Ratelimit-Reset');
@@ -496,6 +487,7 @@ export class MarketTaskExecutor {
             close: bar.close,
             volume: bar.volume ?? undefined,
             providerId: plan.providerId,
+            adjustmentMode: bar.adjustmentMode ?? 'unknown',
             fetchedAt: Date.now(),
             dataQuality: 'normal' as const
           };

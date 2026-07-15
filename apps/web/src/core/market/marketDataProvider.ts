@@ -8,6 +8,9 @@ export interface MarketProviderSecurityInfo {
   assetType: 'STOCK' | 'OPTION';
 }
 
+/** A lightweight search result.  Suggestions must never imply a cache write. */
+export type MarketProviderSecuritySuggestion = MarketProviderSecurityInfo;
+
 export interface MarketDataProvider {
   readonly name: string;
   testConnection(apiKey: string): Promise<MarketDataResult<boolean>>;
@@ -24,6 +27,8 @@ export interface MarketDataProvider {
     apiKey: string
   ): Promise<MarketDataResult<HistoricalDailyBar[]>>;
   searchSecurity(symbol: string, market: string, apiKey: string): Promise<MarketDataResult<MarketProviderSecurityInfo | null>>;
+  /** Providers with a real search endpoint can opt in to multi-result suggestions. */
+  suggestSecurities?(query: string, market: string, apiKey: string, limit: number): Promise<MarketDataResult<MarketProviderSecuritySuggestion[]>>;
   
   // Capability check declarations
   supportsAssetType(assetType: 'STOCK' | 'OPTION'): boolean;
@@ -35,7 +40,7 @@ export class MarketDataAppProvider implements MarketDataProvider {
 
   supportsAssetType(assetType: 'STOCK' | 'OPTION'): boolean {
     const at = (assetType || '').toUpperCase();
-    return at === 'STOCK' || at === 'OPTION';
+    return at === 'OPTION';
   }
 
   supportsMarket(market: string): boolean {
@@ -159,7 +164,7 @@ export class MarketDataAppProvider implements MarketDataProvider {
     }
 
     const firstItem = supportedSymbols[0];
-    const isOption = firstItem.assetType.toUpperCase() === 'OPTION';
+    const isOption = true;
     const endpoint = isOption
       ? (supportedSymbols.length === 1 
           ? `https://api.marketdata.app/v1/options/quotes/${encodeURIComponent(this.formatOptionSymbol(firstItem.symbol))}/`
@@ -185,8 +190,6 @@ export class MarketDataAppProvider implements MarketDataProvider {
           if (item.assetType.toUpperCase() === 'OPTION') {
             const occSymbol = this.formatOptionSymbol(item.symbol);
             url = `https://api.marketdata.app/v1/options/quotes/${encodeURIComponent(occSymbol)}/`;
-          } else {
-            url = `https://api.marketdata.app/v1/stocks/quotes/${item.symbol}/`;
           }
 
           const res = await marketFetch(url, {
@@ -209,9 +212,6 @@ export class MarketDataAppProvider implements MarketDataProvider {
             const bidVal = json.bid ? (json.bid[0] ?? null) : null;
             const askVal = json.ask ? (json.ask[0] ?? null) : null;
             currentPrice = lastVal ?? midVal ?? (bidVal !== null && askVal !== null ? (bidVal + askVal) / 2 : null);
-          } else {
-            if (!json.last || json.last.length === 0) continue;
-            currentPrice = json.last[0] ?? null;
           }
 
           if (currentPrice === null) continue;
@@ -384,6 +384,7 @@ export class MarketDataAppProvider implements MarketDataProvider {
       return { ok: true, status: 'skipped', provider: this.name, data: null };
     }
 
+    return { ok: true, status: 'skipped', provider: this.name, data: null };
     const url = `https://api.marketdata.app/v1/stocks/quotes/${symbol}/`;
     return requestWithLogging<MarketProviderSecurityInfo | null>(
       this.name,

@@ -3,7 +3,9 @@ import {
   PortfolioCalculator, 
   PortfolioSecurityRules, 
   ExchangeRates, 
-  convertToCny 
+  convertToCny,
+  formatQuantity,
+  normalizeQuantity,
 } from '../core/portfolio/portfolioCalculator';
 import { Transaction, QuoteSnapshot } from '../db/schema';
 
@@ -81,6 +83,25 @@ describe('Portfolio Calculator & Rules', () => {
       // Split transaction at 05:30:00 should stay current day
       const date4 = PortfolioSecurityRules.effectiveTradeDate('2026-07-02', '05:30:00', 'US', 'SPLIT');
       expect(date4).toBe('2026-07-02');
+    });
+  });
+
+  describe('Quantity precision', () => {
+    it('normalizes IEEE-754 accumulation to four decimal places', () => {
+      expect(normalizeQuantity(-27.000000000000028)).toBe(-27);
+      expect(formatQuantity(-27.000000000000028)).toBe('-27');
+      expect(formatQuantity(153.3724)).toBe('153.3724');
+    });
+
+    it('keeps fractional positions precise after repeated trades', () => {
+      const txs = Array.from({ length: 10 }, (_, index) => mockTx({
+        tradeType: 'BUY',
+        quantity: 0.1,
+        commission: 0,
+        tax: 0,
+        createdAt: index,
+      }));
+      expect(calculator.calculate(txs, [], defaultRates).positions['US:AAPL'].quantity).toBe(1);
     });
   });
 
@@ -186,6 +207,27 @@ describe('Portfolio Calculator & Rules', () => {
       expect(pos.quantity).toBe(8);
       expect(pos.averageCost).toBe(180);
       expect(pos.remainingCost).toBe(180 * 8);
+    });
+
+    it('11b. keeps a complete paired transfer out of aggregate inflow while preserving cost', () => {
+      const txs = [
+        mockTx({ tradeType: 'BUY', platform: 'LONGBRIDGE', price: 100, quantity: 10, commission: 0, tax: 0, createdAt: 1 }),
+        mockTx({ tradeType: 'TRANSFER_OUT', platform: 'LONGBRIDGE', price: 100, quantity: 4, commission: 2, tax: 0, transferGroupId: 'pair-1', transferCounterpartyPlatform: 'SCHWAB', createdAt: 2 }),
+        mockTx({ tradeType: 'TRANSFER_IN', platform: 'SCHWAB', price: 100, quantity: 4, commission: 0, tax: 0, transferGroupId: 'pair-1', transferCounterpartyPlatform: 'LONGBRIDGE', createdAt: 2 }),
+      ];
+      const aggregate = calculator.calculate(txs, [], defaultRates);
+      expect(aggregate.positions['US:AAPL'].quantity).toBe(10);
+      expect(aggregate.positions['US:AAPL'].remainingCost).toBe(1000);
+      expect(aggregate.netInflowCny).toBe(0);
+      expect(aggregate.cashBalanceCny).toBe(-7214.4);
+      expect(aggregate.totalCommissionCny).toBe(14.4);
+
+      const source = calculator.calculate(txs.filter((tx) => tx.platform === 'LONGBRIDGE'), [], defaultRates);
+      const target = calculator.calculate(txs.filter((tx) => tx.platform === 'SCHWAB'), [], defaultRates);
+      expect(source.positions['US:AAPL'].quantity).toBe(6);
+      expect(target.positions['US:AAPL'].quantity).toBe(4);
+      expect(source.totalWithdrawCny).toBe(2880);
+      expect(target.totalDepositCny).toBe(2880);
     });
 
     it('12. should process interest expenses', () => {
@@ -319,7 +361,7 @@ describe('Portfolio Calculator & Rules', () => {
         change: 3,
         changePercent: 2.94,
         currency: 'USD',
-        provider: 'itick',
+        provider: 'stock-sdk',
         fetchedAt: Date.now()
       }];
 

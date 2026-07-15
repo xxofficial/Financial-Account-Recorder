@@ -9,8 +9,9 @@
 | Room 实体 | Dexie / IndexedDB | 账本、交易、报价和历史日 K 以等价模型保存；账本与平台范围均参与计算。 |
 | `PortfolioCalculator`、`PortfolioMappers` | `src/core/portfolio/portfolioCalculator.ts` | 持仓、成本、已实现/未实现盈亏、出入金和手工拆合股计算。 |
 | `PortfolioSecurityRules` | `src/core/portfolio/portfolioCalculator.ts` | 美股交易日切分与期权 100 倍乘数规则。 |
-| `TradeFeeEstimator` | `src/core/fees/tradeFeeEstimator.ts` | 已有费率与费用计算基础；自动填写交易表单仍是 TODO。 |
-| `MarketTradingSessions` | `src/core/market/marketTradingSessions.ts` | A 股、港股、美股的开盘状态判断；精确节假日历仍是 TODO。 |
+| 自动费用估算 | `src/core/fees/tradeFeeEstimator.ts` + 平台费率方案 | 已覆盖 HSBC、uSMART、致富、嘉信、东方财富、卓锐的公开港/美股规则，以及长桥港股固定公开费率、美股股票和期权；展示明细并经用户确认后回填；其余平台/品种提示手工录入。 |
+| 公司行动同步 | `src/core/corporateActions/*` | A 股通过 stock-sdk/东方财富、港股/美股通过 Yahoo Chart 生成拆并股候选；期权到期按本地持仓扫描。仅在用户确认后写入账本，可在设置开启启动时的每日收市窗口检查。 |
+| `MarketTradingSessions` | `src/core/market/marketTradingSessions.ts` + `src/core/market/itickCalendarProvider.ts` | A 股使用 stock-sdk，港股/美股通过 iTick 自动同步交易日历并本地缓存；无缓存时保留工作日降级。 |
 | 备份模型 | `recoder-backup-v5` | Web 可导入旧 v4；敏感凭据、缓存和请求日志不导出。 |
 
 ## 页面与导航
@@ -39,7 +40,4 @@
 
 | Android 能力 | Web 当前状态 | 后续目标 |
 | :--- | :--- | :--- |
-| 平台间资产转仓 | 仅可独立录入转入、转出。 | 对齐成对转仓、平台/余额校验和关联编辑语义。 |
-| 自动费用估算 | 保留费率配置和表单入口，不自动回填。 | 基于完整费率规则计算并确认费用。 |
-| 自动拆股与过期期权处理 | 仍依赖手工记录。 | 自动同步公司行动并提供批量清理确认。 |
-| 精确交易所休市日历 | 仅按周末近似。 | 使用交易所节假日与交易时段数据。 |
+| 自动费用估算 | 已覆盖 HSBC、uSMART、致富、嘉信、东方财富、卓锐的公开港/美股规则，以及长桥港股固定公开费率、美股股票和期权，并在用户确认后回填。 | 补充尚未覆盖的期权、A 股和其他品种。 |

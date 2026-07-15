@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { db } from '../db/localDb';
 import { backupService, BackupData } from '../core/backup/backupService';
 import { Transaction } from '../db/schema';
+import { createTransferPair } from '../core/transfers/transferService';
 
 describe('Backup and Restore Service', () => {
   beforeEach(async () => {
@@ -73,6 +74,56 @@ describe('Backup and Restore Service', () => {
     expect(exported.ledgers[0].name).toBe('默认个人账本');
     expect(exported.transactions).toHaveLength(1);
     expect(exported.transactions[0].symbol).toBe('AAPL');
+  });
+
+  it('preserves paired transfer metadata in v5 backups', async () => {
+    await db.transactions.add({
+      ledgerId: 1,
+      tradeType: 'BUY',
+      platform: 'LONGBRIDGE',
+      sourceChannel: null,
+      externalReference: null,
+      market: 'US',
+      symbol: 'AAPL',
+      name: 'Apple',
+      tradeDate: '2026-07-01',
+      tradeTime: '10:00:00',
+      price: 100,
+      quantity: 5,
+      commission: 0,
+      tax: 0,
+      note: '',
+      createdAt: 1,
+      updatedAt: 1,
+      investorName: null,
+      assetType: 'STOCK',
+      underlyingSymbol: null,
+      expiryDate: null,
+      strikePrice: null,
+      optionType: null,
+      fxFromCurrency: null,
+      fxFromAmount: null,
+      fxToCurrency: null,
+      fxToAmount: null,
+      fxRate: null,
+    } as Transaction);
+    const pair = await createTransferPair({
+      ledgerId: 1,
+      sourcePlatform: 'LONGBRIDGE',
+      targetPlatform: 'SCHWAB',
+      market: 'US',
+      symbol: 'AAPL',
+      name: 'Apple',
+      tradeDate: '2026-07-02',
+      tradeTime: '10:00:00',
+      isSecurity: true,
+      quantity: 2,
+    });
+    const exported = await backupService.exportBackup();
+    const exportedPair = exported.transactions.filter((tx) => tx.transferGroupId === pair.groupId);
+    expect(exportedPair).toHaveLength(2);
+    expect(new Set(exportedPair.map((tx) => tx.transferCounterpartyPlatform))).toEqual(new Set(['LONGBRIDGE', 'SCHWAB']));
+    expect(backupService.parseBackup(JSON.stringify(exported)).sourceVersion).toBe(5);
   });
 
   it('should parse and validate backup JSON successfully', () => {
@@ -163,11 +214,11 @@ describe('Backup and Restore Service', () => {
 
   it('does not export provider keys or unrelated sensitive settings', async () => {
     await db.marketProviderConfigs.put({
-      provider: 'itick',
+      provider: 'stock-sdk',
       enabled: 1,
       priority: 1,
       apiKey: 'very-secret-market-key',
-      baseUrl: 'https://api.itick.org',
+      baseUrl: 'stock-sdk',
       optionsJson: '{}',
       createdAt: Date.now(),
       updatedAt: Date.now(),

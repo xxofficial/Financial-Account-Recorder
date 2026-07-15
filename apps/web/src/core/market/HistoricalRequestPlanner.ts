@@ -43,32 +43,32 @@ export interface HistoricalRequestPlan {
 
 export const INITIAL_CAPABILITIES: ProviderCapability[] = [
   {
+    providerId: 'stock-sdk',
+    supportsRealtimeQuotes: true,
+    supportsHistorical: true,
+    supportsSymbolRange: true,
+    supportsMultiSymbolSameRange: false,
+    supportsMultiSymbolSameDate: false,
+    supportsRecentLimit: true,
+    supportsAssetTypes: ['stock'],
+    supportsMarkets: ['A_SHARE', 'HK', 'US'],
+    maxSymbolsPerRequest: 1,
+    costModel: 'provider_specific',
+    quotaDetection: 'unknown'
+  },
+  {
     providerId: 'android-default',
     supportsRealtimeQuotes: true,
     supportsHistorical: true,
     supportsSymbolRange: true,
-    supportsMultiSymbolSameRange: true,
+    supportsMultiSymbolSameRange: false,
     supportsMultiSymbolSameDate: false,
     supportsRecentLimit: true,
-    supportsAssetTypes: ['stock', 'option'],
-    supportsMarkets: ['A_SHARE', 'HK', 'US'],
-    maxSymbolsPerRequest: 8,
+    supportsAssetTypes: ['option'],
+    supportsMarkets: ['US'],
+    maxSymbolsPerRequest: 1,
     costModel: 'unknown',
     quotaDetection: 'manual_default'
-  },
-  {
-    providerId: 'twelvedata',
-    supportsRealtimeQuotes: true,
-    supportsHistorical: true,
-    supportsSymbolRange: true,
-    supportsMultiSymbolSameRange: true,
-    supportsMultiSymbolSameDate: false,
-    supportsRecentLimit: true,
-    supportsAssetTypes: ['stock', 'etf', 'fund', 'crypto', 'forex'],
-    supportsMarkets: ['US', 'HK', 'CN'],
-    maxSymbolsPerRequest: 8,
-    costModel: 'per_symbol',
-    quotaDetection: 'response_headers'
   },
   {
     providerId: 'marketdata',
@@ -78,25 +78,11 @@ export const INITIAL_CAPABILITIES: ProviderCapability[] = [
     supportsMultiSymbolSameRange: false,
     supportsMultiSymbolSameDate: true,
     supportsRecentLimit: true,
-    supportsAssetTypes: ['stock', 'etf', 'option', 'fund', 'crypto', 'forex'],
+    supportsAssetTypes: ['option'],
     supportsMarkets: ['US'],
-    maxSymbolsPerRequest: 20,
+    maxSymbolsPerRequest: 1,
     costModel: 'provider_specific',
     quotaDetection: 'user_endpoint_and_response_headers'
-  },
-  {
-    providerId: 'itick',
-    supportsRealtimeQuotes: true,
-    supportsHistorical: true,
-    supportsSymbolRange: false,
-    supportsMultiSymbolSameRange: false,
-    supportsMultiSymbolSameDate: false,
-    supportsRecentLimit: true,
-    supportsAssetTypes: ['stock', 'etf', 'fund', 'crypto', 'forex'],
-    supportsMarkets: ['US', 'HK', 'CN'],
-    maxSymbolsPerRequest: 10,
-    costModel: 'unknown',
-    quotaDetection: 'manual_default'
   }
 ];
 
@@ -119,7 +105,7 @@ export class HistoricalRequestPlanner {
 
     // Filter to get only enabled and non-cooldown providers
     const activeProviders = providerConfigs
-      .filter(c => c.enabled === 1 && (c.apiKey.trim() !== '' || c.provider === 'android-default'))
+      .filter(c => c.enabled === 1 && (c.apiKey.trim() !== '' || c.provider === 'android-default' || c.provider === 'stock-sdk'))
       .map(c => {
         const capability = providerCapabilities.find(cap => cap.providerId === c.provider);
         const quota = quotaStates.find(q => q.providerId === c.provider);
