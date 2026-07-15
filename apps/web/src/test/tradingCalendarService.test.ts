@@ -20,7 +20,7 @@ describe('TradingCalendarService', () => {
     expect(calendar.prevTradingDay).toHaveBeenCalledWith('2026-10-01');
   });
 
-  it('uses iTick market holidays and preserves weekday fallback when unavailable', async () => {
+  it('uses the keyless market calendar and preserves weekday fallback when unavailable', async () => {
     const service = new TradingCalendarService(calendar, marketCalendar);
     expect(await service.isTradingDay('US', '2026-07-03')).toBe(false);
     expect(await service.previousExpectedCloseDate('HK', '2026-07-07')).toBe('2026-07-06');

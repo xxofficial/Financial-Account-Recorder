@@ -1,6 +1,6 @@
 import { StockSDK } from 'stock-sdk';
 import { marketFetch } from '../../platform/nativeRuntime';
-import { itickCalendarProvider, type CalendarMarket as ItickCalendarMarket } from './itickCalendarProvider';
+import { stockCalendarProvider, type CalendarMarket as StockCalendarMarket } from './stockCalendarProvider';
 
 export type CalendarMarket = 'A_SHARE' | 'HK' | 'US';
 
@@ -10,8 +10,8 @@ export interface AShareTradingCalendar {
 }
 
 export interface MarketSpecificTradingCalendar {
-  isTradingDay(market: ItickCalendarMarket, date: string): Promise<boolean | undefined>;
-  previousExpectedCloseDate(market: ItickCalendarMarket, date: string): Promise<string | undefined>;
+  isTradingDay(market: StockCalendarMarket, date: string): Promise<boolean | undefined>;
+  previousExpectedCloseDate(market: StockCalendarMarket, date: string): Promise<string | undefined>;
 }
 
 function isWeekday(date: string): boolean {
@@ -44,12 +44,12 @@ function createAShareCalendar(): AShareTradingCalendar {
 export class TradingCalendarService {
   constructor(
     private readonly aShareCalendar: AShareTradingCalendar = createAShareCalendar(),
-    private readonly marketCalendar: MarketSpecificTradingCalendar = itickCalendarProvider,
+    private readonly marketCalendar: MarketSpecificTradingCalendar = stockCalendarProvider,
   ) {}
 
   async isTradingDay(market: string, date: string): Promise<boolean> {
     if (market !== 'A_SHARE') {
-      const providerResult = await this.marketCalendar.isTradingDay(market as ItickCalendarMarket, date);
+      const providerResult = await this.marketCalendar.isTradingDay(market as StockCalendarMarket, date);
       return providerResult ?? isWeekday(date);
     }
     try {
@@ -62,7 +62,7 @@ export class TradingCalendarService {
   /** Last completed session before the local market date, matching existing EOD behavior. */
   async previousExpectedCloseDate(market: string, localToday: string): Promise<string> {
     if (market !== 'A_SHARE') {
-      const providerResult = await this.marketCalendar.previousExpectedCloseDate(market as ItickCalendarMarket, localToday);
+      const providerResult = await this.marketCalendar.previousExpectedCloseDate(market as StockCalendarMarket, localToday);
       return providerResult ?? previousWeekday(localToday);
     }
     try {
