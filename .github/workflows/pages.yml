@@ -26,7 +26,7 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run typecheck
-      - run: npm run test -- --testTimeout=15000
+      - run: npm run test --workspace @recoder/web -- --testTimeout=15000
       - run: npx playwright install --with-deps chromium
       # The stock-sdk probe suite requires its dedicated market-probe build and
       # live upstream endpoints; keep the Pages gate deterministic and run the

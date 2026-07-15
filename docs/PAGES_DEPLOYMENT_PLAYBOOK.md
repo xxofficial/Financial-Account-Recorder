@@ -35,7 +35,7 @@ git log -1 --oneline
 npm ci
 npm run lint
 npm run typecheck
-npm run test -- --testTimeout=15000
+npm run test --workspace @recoder/web -- --testTimeout=15000
 npm run build
 ```
 
