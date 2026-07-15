@@ -2,7 +2,7 @@ import { expect, test } from 'playwright/test';
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const schwabStatementSample = resolve(process.cwd(), '../../samples/Statements/Schwab/Brokerage Account_06_30_2026.pdf');
+const schwabStatementSample = resolve(process.cwd(), '../../samples/Statements/Schwab/六月.pdf');
 
 test('opens the Android-style portfolio shell and navigates with hash routes', async ({ page }) => {
   await page.goto('/#/');
@@ -29,6 +29,8 @@ test('extracts a local text PDF statement through the browser importer', async (
   await page.goto('/#/data/imports');
   await page.getByLabel('选择 PDF 结单').setInputFiles(schwabStatementSample);
   await expect(page.getByText(/SCHWAB ·/).first()).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('button', { name: /确认导入/ }).click();
+  await expect(page.getByText(/已导入|已忽略重复交易/).first()).toBeVisible();
 });
 
 test('keeps statement passwords in platform settings instead of the import form', async ({ page }) => {

@@ -1,4 +1,5 @@
 import { createSyncId, createTransactionFingerprint, parseBrokerText, parsePdfStatementText, type ParsedTradeCandidate } from '@recoder/core';
+import Dexie from 'dexie';
 import { db } from '../../db/localDb';
 import type { Transaction } from '../../db/schema';
 import { isAndroidNativeRuntime, nativeDocument, nativeInbox, nativeSecretKeyForStatement, type NativeInboxItem } from '../../platform/nativeRuntime';
@@ -19,24 +20,28 @@ export async function importParsedCandidate(
   candidate: ParsedTradeCandidate,
   sourceLabel: string,
 ): Promise<NativeInboxImportResult> {
+  // Web Crypto is not an IndexedDB request.  Await it before opening the
+  // Dexie transaction, otherwise the browser may auto-commit the transaction
+  // while SHA-256 is being calculated (Transaction committed too early).
+  const candidateRecord = {
+    platform: candidate.platform,
+    externalReference: candidate.externalReference,
+    tradeType: candidate.tradeType,
+    market: candidate.market,
+    symbol: candidate.symbol,
+    tradeDate: candidate.tradeDate,
+    tradeTime: candidate.tradeTime,
+    price: candidate.price,
+    quantity: candidate.quantity,
+    commission: candidate.commission,
+    tax: candidate.tax,
+    assetType: 'STOCK',
+  };
+  const fingerprint = await createTransactionFingerprint(candidateRecord);
+
   const result = await db.transaction('rw', [db.transactions, db.appSettings], async () => {
     const defaultLedger = await db.appSettings.get('default_ledger');
     const ledgerId = typeof defaultLedger?.value === 'number' ? defaultLedger.value : 1;
-    const candidateRecord = {
-      platform: candidate.platform,
-      externalReference: candidate.externalReference,
-      tradeType: candidate.tradeType,
-      market: candidate.market,
-      symbol: candidate.symbol,
-      tradeDate: candidate.tradeDate,
-      tradeTime: candidate.tradeTime,
-      price: candidate.price,
-      quantity: candidate.quantity,
-      commission: candidate.commission,
-      tax: candidate.tax,
-      assetType: 'STOCK',
-    };
-    const fingerprint = await createTransactionFingerprint(candidateRecord);
     const transactions = await db.transactions.toArray();
     const sameReference = transactions.find((transaction) =>
       transaction.platform === candidate.platform && transaction.externalReference === candidate.externalReference,
@@ -44,7 +49,10 @@ export async function importParsedCandidate(
     const sameFingerprint = transactions.find((transaction) => transaction.sourceFingerprint === fingerprint);
     const existing = sameReference ?? sameFingerprint;
     if (existing) {
-      const existingFingerprint = existing.sourceFingerprint ?? await createTransactionFingerprint(existing as unknown as Record<string, unknown>);
+      // Legacy rows can lack a persisted fingerprint. Keep this exceptional
+      // crypto operation within the transaction explicitly alive.
+      const existingFingerprint = existing.sourceFingerprint
+        ?? await Dexie.waitFor(createTransactionFingerprint(existing as unknown as Record<string, unknown>));
       if (existingFingerprint === fingerprint) {
         return { status: 'DUPLICATE' as const, message: `已忽略重复交易：${candidate.symbol} ${candidate.tradeDate}` };
       }
