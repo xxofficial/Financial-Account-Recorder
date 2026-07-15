@@ -5,11 +5,11 @@ import { ArrowUpDown, ChevronRight, TrendingDown, TrendingUp } from 'lucide-reac
 import { db } from '../db/localDb';
 import type { Transaction } from '../db/schema';
 import { useAppShell } from '../app/AppShell';
-import { PortfolioCalculator } from '../core/portfolio/portfolioCalculator';
+import { PortfolioCalculator, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
 import { securityDetailPath } from '../core/portfolio/securityDetailRoute';
 import { formatSignedDisplayAmount } from '../core/portfolio/analysisUtils';
 import { analysisRuntimeCache, analysisRates, readAnalysisInput, type AnalysisScope } from '../core/portfolio/analysisRuntime';
-import { BrokerPlatform, CurrencyType, DisplayCurrency } from '../shared/models';
+import { CurrencyType, DisplayCurrency, type MarketType } from '../shared/models';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
 type RankingRange = 'ALL' | 'THIS_MONTH' | 'ONE_MONTH' | 'SIX_MONTHS' | 'THIS_YEAR' | 'CUSTOM';
@@ -76,7 +76,7 @@ function instrumentPnl(
   const realized = (closing?.realizedProfit ?? 0) - (opening?.realizedProfit ?? 0);
   return {
     key,
-    market: market as keyof typeof BrokerPlatform | string,
+    market: market as MarketType,
     symbol,
     name: closing?.name || opening?.name || positionTransactions[0]?.name || symbol,
     assetType: closing?.assetType || opening?.assetType || positionTransactions[0]?.assetType || 'STOCK',
