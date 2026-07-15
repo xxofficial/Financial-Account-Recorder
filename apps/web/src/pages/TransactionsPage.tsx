@@ -11,13 +11,11 @@ import {
 } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 import { db } from '../db/localDb';
-import { TransactionRepository } from '../db/repositories';
 import { Market, BrokerPlatform, TradeTypeLabels, type MarketType, type PlatformType, type TradeType } from '../shared/models';
 import { PlatformMark, useAppShell } from '../app/AppShell';
+import { getTransferPairByTransactionId } from '../core/transfers/transferService';
 import type { Transaction, Ledger } from '../db/schema';
 import type { ReactNode } from 'react';
-
-const txnRepo = new TransactionRepository();
 
 type CashFlowFilter = 'ALL' | 'INFLOW' | 'OUTFLOW';
 type CurrencyFilter = 'ALL' | 'USD' | 'HKD' | 'CNY';
@@ -274,10 +272,39 @@ export default function TransactionsPage() {
     setStartDate(normalized[0]); setEndDate(normalized[1]); setShowDateSheet(false);
   };
   const applyCategoryFilters = () => { setCashFilter(pendingCash); setCurrencyFilter(pendingCurrency); setSceneFilter(pendingScene); setShowFilterSheet(false); };
-  const deleteSelected = async () => { await Promise.all([...selectedIds].map((id) => txnRepo.delete(id))); setShowDeleteConfirm(false); exitBatchMode(); };
+  const selectedTransactionIds = async () => {
+    const ids = new Set<number>(selectedIds);
+    for (const id of selectedIds) {
+      const pair = await getTransferPairByTransactionId(id);
+      if (pair?.out.id) ids.add(pair.out.id);
+      if (pair?.in.id) ids.add(pair.in.id);
+    }
+    return [...ids];
+  };
+  const deleteSelected = async () => {
+    try {
+      const ids = await selectedTransactionIds();
+      await db.transaction('rw', [db.transactions], async () => { await db.transactions.bulkDelete(ids); });
+      setShowDeleteConfirm(false); exitBatchMode();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '删除失败，请重试。');
+    }
+  };
   const moveSelected = useCallback(async (targetLedgerId: number) => {
-    await Promise.all([...selectedIds].map((id) => txnRepo.update(id, { ledgerId: targetLedgerId })));
-    setShowMoveLedger(false); exitBatchMode();
+    try {
+      const ids = new Set<number>(selectedIds);
+      for (const id of selectedIds) {
+        const pair = await getTransferPairByTransactionId(id);
+        if (pair?.out.id) ids.add(pair.out.id);
+        if (pair?.in.id) ids.add(pair.in.id);
+      }
+      await db.transaction('rw', [db.transactions], async () => {
+        await Promise.all([...ids].map((id) => db.transactions.update(id, { ledgerId: targetLedgerId, updatedAt: Date.now() })));
+      });
+      setShowMoveLedger(false); exitBatchMode();
+    } catch (error) {
+      window.alert(error instanceof Error ? error.message : '迁移失败，请重试。');
+    }
   }, [selectedIds]);
 
   return <div className="page tab-page transactions-page">

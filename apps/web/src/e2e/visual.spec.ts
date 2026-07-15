@@ -127,8 +127,7 @@ for (const width of phoneWidths) {
     await expect(page.locator('.trade-form-page')).toBeVisible();
     await expect(page.locator('.bottom-tab-bar')).toHaveCount(0);
     await expect(page.locator('.sync-card')).toHaveCount(0);
-    await expect(page.getByRole('button', { name: /自动估算/ })).toBeDisabled();
-    await expect(page.getByText('自动估算（待实现）')).toBeVisible();
+    await expect(page.getByRole('button', { name: '自动估算' })).toBeEnabled();
     await expect(page).toHaveScreenshot(`transaction-form-${width}.png`, {
       animations: 'disabled',
       fullPage: true,

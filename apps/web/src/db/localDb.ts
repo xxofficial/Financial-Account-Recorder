@@ -248,6 +248,13 @@ export class LocalDatabase extends Dexie {
       const marketdata = await configs.get('marketdata');
       if (marketdata) await configs.update('marketdata', { priority: 2, updatedAt: now });
     });
+
+    // Version 12: register optional linkage metadata for paired transfers.
+    // The fields are deliberately not indexed; pair lookups stay scoped to a
+    // ledger and are small enough to filter in memory without another index.
+    this.version(12).stores({
+      transactions: '++id, syncId, sourceFingerprint, ledgerId, tradeDate, symbol, market, platform, [ledgerId+tradeDate], [market+symbol], [platform+externalReference]',
+    });
   }
 }
 

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ArchiveRestore, ChevronRight, Database, FileText, Inbox, Mail, RefreshCw } from 'lucide-react';
+import { ArchiveRestore, ChevronRight, Database, FileText, Inbox, Mail, RefreshCw, ShieldAlert } from 'lucide-react';
 import { isAndroidNativeRuntime, nativeEmailSync, type NativeEmailSyncConfig } from '../platform/nativeRuntime';
 
 const maskedAccount = (account: string) => {
@@ -30,6 +30,7 @@ export default function DataPage() {
     { title: '数据备份', desc: '导出 v5 备份，导入旧 Android 或其他设备的数据。', icon: ArchiveRestore, path: '/data/backup' },
     { title: '行情缓存', desc: '管理、导入、导出和补齐历史日 K 线缓存。', icon: Database, path: '/data/cache' },
     { title: '电子结单导入', desc: '导入长桥、汇丰、uSMART 与嘉信的文本型电子结单。', icon: FileText, path: '/data/imports' },
+    { title: '期权到期处理', desc: '扫描过期未平仓期权，确认后批量记账。', icon: ShieldAlert, path: '/data/corporate-actions' },
   ];
 
   return <div className="page tab-page data-page">

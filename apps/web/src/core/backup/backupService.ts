@@ -117,6 +117,8 @@ async function upgradeV4Backup(backup: BackupV4): Promise<BackupV5> {
       fxToCurrency: asNullableString(raw.fxToCurrency),
       fxToAmount: raw.fxToAmount ?? null,
       fxRate: raw.fxRate ?? null,
+      transferGroupId: asNullableString(raw.transferGroupId),
+      transferCounterpartyPlatform: asNullableString(raw.transferCounterpartyPlatform),
     };
     const fingerprint = await createTransactionFingerprint(base);
     const tradeType = ['BUY', 'SELL', 'DEPOSIT', 'WITHDRAW', 'TRANSFER_OUT', 'TRANSFER_IN', 'INTEREST', 'SPLIT', 'EXPIRE', 'DIVIDEND', 'TAX', 'FX_CONVERSION', 'OTHER'].includes(base.tradeType)
@@ -157,6 +159,8 @@ async function upgradeV4Backup(backup: BackupV4): Promise<BackupV5> {
       fxToCurrency: base.fxToCurrency,
       fxToAmount: typeof raw.fxToAmount === 'number' ? raw.fxToAmount : null,
       fxRate: typeof raw.fxRate === 'number' ? raw.fxRate : null,
+      transferGroupId: base.transferGroupId,
+      transferCounterpartyPlatform: base.transferCounterpartyPlatform,
       fingerprint,
       createdAt: asNumber(raw.createdAt, timestamp),
       updatedAt: asNumber(raw.updatedAt, asNumber(raw.createdAt, timestamp)),
@@ -274,6 +278,8 @@ export class BackupService {
         fxToCurrency: tx.fxToCurrency,
         fxToAmount: tx.fxToAmount,
         fxRate: tx.fxRate,
+        transferGroupId: tx.transferGroupId ?? null,
+        transferCounterpartyPlatform: tx.transferCounterpartyPlatform ?? null,
         fingerprint,
         createdAt: tx.createdAt,
         updatedAt: tx.updatedAt,
@@ -392,6 +398,8 @@ export class BackupService {
           fxToCurrency: tx.fxToCurrency,
           fxToAmount: tx.fxToAmount,
           fxRate: tx.fxRate,
+          transferGroupId: tx.transferGroupId ?? null,
+          transferCounterpartyPlatform: tx.transferCounterpartyPlatform ?? null,
         };
         await db.transactions.add(local);
         existing.push(local);

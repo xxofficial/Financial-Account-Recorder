@@ -11,6 +11,7 @@ import FullRankingPage from '../pages/FullRankingPage';
 import ProfitCalendarDetailPage from '../pages/ProfitCalendarDetailPage';
 import MarketCachePage from '../pages/MarketCachePage';
 import DataPage from '../pages/DataPage';
+import ExpiredOptionsPage from '../pages/ExpiredOptionsPage';
 
 export default function AppRoutes() {
   const { pathname } = useLocation();
@@ -29,6 +30,7 @@ export default function AppRoutes() {
       <Route path="/data/imports" element={<ImportExportPage />} />
       <Route path="/data/email-imports" element={<ImportExportPage />} />
       <Route path="/data/cache" element={<MarketCachePage />} />
+      <Route path="/data/corporate-actions" element={<ExpiredOptionsPage />} />
       <Route path="/import-export" element={<Navigate to="/data/backup" replace />} />
       <Route path="/market-cache" element={<Navigate to="/data/cache" replace />} />
       <Route path="/settings" element={<SettingsPage />} />

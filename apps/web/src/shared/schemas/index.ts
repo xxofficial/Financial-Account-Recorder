@@ -74,6 +74,8 @@ export const transactionFormSchema = z.object({
   fxToCurrency: z.string().nullable().optional(),
   fxToAmount: z.number().nullable().optional(),
   fxRate: z.number().nullable().optional(),
+  transferGroupId: z.string().nullable().optional(),
+  transferCounterpartyPlatform: z.string().nullable().optional(),
 });
 
 // 使用 refine 针对资产类型和交易类型增加联动条件校验

@@ -67,6 +67,11 @@ export interface Transaction {
   fxToCurrency: string | null;
   fxToAmount: number | null;
   fxRate: number | null;
+
+  /** Stable id shared by the two sides of a platform-to-platform transfer. */
+  transferGroupId?: string | null;
+  /** The broker platform on the other side of a paired transfer. */
+  transferCounterpartyPlatform?: string | null;
 }
 
 export interface QuoteSnapshot {

@@ -52,6 +52,8 @@ export const transactionV5Schema = z.object({
   fxToCurrency: z.string().nullable(),
   fxToAmount: z.number().nullable(),
   fxRate: z.number().nullable(),
+  transferGroupId: z.string().nullable().optional().default(null),
+  transferCounterpartyPlatform: z.string().nullable().optional().default(null),
   fingerprint: z.string().min(1),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
