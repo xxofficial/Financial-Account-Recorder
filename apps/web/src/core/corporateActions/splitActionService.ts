@@ -6,6 +6,7 @@ import { marketFetch } from '../../platform/nativeRuntime';
 const EPSILON = 1e-8;
 
 export const CORPORATE_ACTION_AUTO_SYNC_KEY = 'corporate_action_auto_sync';
+export const DEFAULT_CORPORATE_ACTION_AUTO_SYNC = true;
 export const CORPORATE_ACTION_SYNC_STATE_KEY = 'corporate_action_sync_state_v1';
 export const CORPORATE_ACTION_PENDING_SPLITS_KEY = 'corporate_action_pending_splits_v1';
 
@@ -253,7 +254,9 @@ export async function syncCorporateActionSplits(options: {
 
 /** Called at app launch only; it does not register a timer or background job. */
 export async function syncCorporateActionsOnAppOpen(): Promise<CorporateActionSyncResult | null> {
-  const enabled = Boolean((await db.appSettings.get(CORPORATE_ACTION_AUTO_SYNC_KEY))?.value);
+  const setting = await db.appSettings.get(CORPORATE_ACTION_AUTO_SYNC_KEY);
+  // An explicit false remains respected; first-time users sync by default.
+  const enabled = typeof setting?.value === 'boolean' ? setting.value : DEFAULT_CORPORATE_ACTION_AUTO_SYNC;
   if (!enabled) return null;
   const ledgerId = (await db.appSettings.get('default_ledger'))?.value;
   return syncCorporateActionSplits({ ledgerId: typeof ledgerId === 'number' ? ledgerId : 1 });

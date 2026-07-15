@@ -1,4 +1,4 @@
-import { createSyncId, createTransactionFingerprint, parseBrokerText, parsePdfStatementText, type ParsedTradeCandidate } from '@recoder/core';
+import { createSyncId, createTransactionFingerprint, importedTradeTimestamp, parseBrokerText, parsePdfStatementText, type ParsedTradeCandidate } from '@recoder/core';
 import Dexie from 'dexie';
 import { db } from '../../db/localDb';
 import type { Transaction } from '../../db/schema';
@@ -59,6 +59,7 @@ export async function importParsedCandidate(
       return { status: 'FAILED' as const, message: `检测到外部编号冲突：${candidate.externalReference}。原始内容未覆盖本地交易。` };
     }
     const now = Date.now();
+    const createdAt = importedTradeTimestamp(candidate.tradeDate, candidate.tradeTime) ?? now;
     await db.transactions.add({
       syncId: createSyncId(),
       sourceFingerprint: fingerprint,
@@ -77,7 +78,7 @@ export async function importParsedCandidate(
       commission: candidate.commission,
       tax: candidate.tax,
       note: sourceLabel,
-      createdAt: now,
+      createdAt,
       updatedAt: now,
       investorName: null,
       assetType: 'STOCK',

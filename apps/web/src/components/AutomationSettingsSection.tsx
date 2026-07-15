@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { CalendarDays, RefreshCw } from 'lucide-react';
 import { db } from '../db/localDb';
 import { getStockCalendarStatus, syncStockCalendar } from '../core/market/stockCalendarProvider';
-import { CORPORATE_ACTION_AUTO_SYNC_KEY } from '../core/corporateActions/splitActionService';
+import { CORPORATE_ACTION_AUTO_SYNC_KEY, DEFAULT_CORPORATE_ACTION_AUTO_SYNC } from '../core/corporateActions/splitActionService';
 
 export default function AutomationSettingsSection() {
   const [calendarStatus, setCalendarStatus] = useState<{ configured: boolean; fetchedAt?: number; lastError?: string; recordCount: number }>({ configured: false, recordCount: 0 });
   const [calendarSyncing, setCalendarSyncing] = useState(false);
-  const [corporateActionAutoSync, setCorporateActionAutoSync] = useState(false);
+  const [corporateActionAutoSync, setCorporateActionAutoSync] = useState(DEFAULT_CORPORATE_ACTION_AUTO_SYNC);
   const [message, setMessage] = useState('');
 
   useEffect(() => {
@@ -16,7 +16,7 @@ export default function AutomationSettingsSection() {
         getStockCalendarStatus(),
         db.appSettings.get(CORPORATE_ACTION_AUTO_SYNC_KEY),
       ]);
-      setCorporateActionAutoSync(Boolean(corporateActionSetting?.value));
+      setCorporateActionAutoSync(typeof corporateActionSetting?.value === 'boolean' ? corporateActionSetting.value : DEFAULT_CORPORATE_ACTION_AUTO_SYNC);
       setCalendarStatus(calendarSetting);
     })();
   }, []);

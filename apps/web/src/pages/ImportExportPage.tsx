@@ -20,7 +20,7 @@ import { TradeTypeLabels } from '../shared/models';
 import { isAndroidNativeRuntime } from '../platform/nativeRuntime';
 import { useAppShell } from '../app/AppShell';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
-import { parsePdfStatementText, type ParsedTradeCandidate } from '@recoder/core';
+import { parsePdfStatementText, parseSchwabTransactionsCsv, type ParsedTradeCandidate } from '@recoder/core';
 import { extractPdfText } from '../core/imports/pdfTextExtractor';
 import {
   dismissNativeInboxItem,
@@ -123,8 +123,9 @@ export default function ImportExportPage() {
     setStatementBusy(true);
     setStatementMessage('');
     try {
-      const text = await extractPdfText(file, password);
-      const parsed = parsePdfStatementText(text);
+      const isSchwabCsv = /\.csv$/i.test(file.name);
+      const text = isSchwabCsv ? await file.text() : await extractPdfText(file, password);
+      const parsed = isSchwabCsv ? parseSchwabTransactionsCsv(text) : parsePdfStatementText(text);
       setStatementCandidates(parsed.candidates);
       setStatementWarnings(parsed.warnings);
     } catch (error) {
@@ -300,18 +301,18 @@ export default function ImportExportPage() {
       {!isBackupRoute && !isEmailRoute && <div className="glass-card import-export-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <FileText size={18} style={{ color: 'var(--accent)' }} />
-          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入文本 PDF 结单</h3>
+          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入嘉信 CSV 或文本 PDF 结单</h3>
         </div>
         <p className="text-xs text-muted" style={{ margin: 0 }}>
-          支持长桥、汇丰、uSMART 与嘉信的可复制文本结单。加密结单会自动使用设置中为当前平台保存的密码；扫描件不支持。
+          支持嘉信网页导出的 Transactions CSV，以及长桥、汇丰、uSMART 与嘉信的可复制文本 PDF 结单。加密结单会自动使用设置中为当前平台保存的密码；扫描件不支持。
         </p>
         <label className="import-export-file-row">
           <span className="import-export-file-icon"><FileText size={18} aria-hidden="true" /></span>
           <span className="import-export-file-copy">
-            <strong>{statementFile ? '已选择 PDF 结单' : '选择 PDF 结单'}</strong>
-            <small>{statementFile ? statementFile.name : '支持文本型 PDF；扫描件暂不支持'}</small>
+            <strong>{statementFile ? '已选择导入文件' : '选择 PDF 或嘉信 CSV'}</strong>
+            <small>{statementFile ? statementFile.name : '支持文本型 PDF 与嘉信 Transactions CSV；扫描件暂不支持'}</small>
           </span>
-          <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf" onChange={handleStatementFileChange} disabled={statementBusy} />
+          <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf,text/csv,.csv" onChange={handleStatementFileChange} disabled={statementBusy} />
         </label>
         {statementBusy && <div className="text-xs text-muted">正在提取并解析结单…</div>}
         {statementWarnings.length > 0 && <div className="text-xs" style={{ color: 'var(--color-warning)' }}>{statementWarnings.join(' ')}</div>}

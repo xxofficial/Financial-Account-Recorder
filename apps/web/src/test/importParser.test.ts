@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseBrokerText, parsePdfStatementText } from '@recoder/core';
+import { parseBrokerText, parsePdfStatementText, parseSchwabTransactionsCsv } from '@recoder/core';
 
 describe('deterministic text import parsers', () => {
   it('parses a Zhuorui email into an idempotent A-share candidate', () => {
@@ -63,6 +63,23 @@ describe('deterministic text import parsers', () => {
     const result = parseBrokerText('这是一张扫描件，无法复制任何有效结单文字。');
     expect(result.candidates).toEqual([]);
     expect(result.warnings[0]).toContain('未识别');
+  });
+
+  it('parses Schwab Transactions CSV, pairs NRA tax, and uses Android-compatible import times', () => {
+    const result = parseSchwabTransactionsCsv([
+      '"Date","Action","Symbol","Description","Quantity","Price","Fees & Comm","Amount"',
+      '"06/30/2026","Reinvest Shares","QLD","PROSHARES ULTRA QQQ","0.0581","$96.75","","-$5.62"',
+      '"06/30/2026","Qualified Dividend","AVGO","BROADCOM INC","","","","$9.75"',
+      '"06/30/2026","NRA Tax Adj","AVGO","BROADCOM INC","","","","-$0.98"',
+      '"06/29/2026","Margin Interest","","INTEREST 05/28 THRU 06/28","","","","-$77.14"',
+      '"06/26/2026","Journal","AVGX","Adjustment","25","","",""',
+    ].join('\n'));
+    expect(result.candidates).toEqual(expect.arrayContaining([
+      expect.objectContaining({ tradeType: 'BUY', symbol: 'QLD', quantity: 0.0581, tradeTime: '21:35' }),
+      expect.objectContaining({ tradeType: 'DIVIDEND', symbol: 'AVGO', price: 9.75, tax: 0.98, tradeTime: '21:35' }),
+      expect.objectContaining({ tradeType: 'INTEREST', symbol: 'CASH', price: 77.14, tradeTime: '21:35' }),
+    ]));
+    expect(result.warnings.join(' ')).toContain('Journal');
   });
 
   it('parses the Schwab transaction-detail row layout used by monthly statements', () => {

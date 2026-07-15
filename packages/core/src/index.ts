@@ -14,7 +14,7 @@ export type ImportedMarket = 'A_SHARE' | 'HK' | 'US';
 export interface ParsedTradeCandidate {
   id: string;
   platform: ImportedBrokerPlatform;
-  sourceChannel: 'ZHUORUI_EMAIL' | 'SCHWAB_EMAIL' | 'HSBC_EMAIL' | 'PDF_TEXT' | 'SHARED_TEXT';
+  sourceChannel: 'ZHUORUI_EMAIL' | 'SCHWAB_EMAIL' | 'HSBC_EMAIL' | 'PDF_TEXT' | 'CSV_TEXT' | 'SHARED_TEXT';
   externalReference: string;
   tradeType: ImportedTradeType;
   market: ImportedMarket;
@@ -177,7 +177,7 @@ function parseSchwabEmail(rawText: string): ParsedTradeCandidate[] {
       name,
       currency: 'USD' as const,
       tradeDate,
-      tradeTime: '00:00:00',
+      tradeTime: '',
       price,
       quantity,
       commission: 0,
@@ -190,9 +190,9 @@ function parseSchwabEmail(rawText: string): ParsedTradeCandidate[] {
 /** Parse only deterministic, text-based broker confirmations. No OCR/LLM fallback exists. */
 export function parseBrokerText(rawText: string): BrokerTextParseResult {
   const zhuorui = parseZhuoruiEmail(rawText);
-  if (zhuorui) return { candidates: [zhuorui], warnings: [] };
+  if (zhuorui) return { candidates: resolveImportedTradeTimes([zhuorui]), warnings: [] };
   const schwab = parseSchwabEmail(rawText);
-  if (schwab.length) return { candidates: schwab, warnings: [] };
+  if (schwab.length) return { candidates: resolveImportedTradeTimes(schwab), warnings: [] };
   return { candidates: [], warnings: ['未识别为卓锐或嘉信的文本成交通知；请确认来源，或改为手动记账。'] };
 }
 
@@ -218,6 +218,36 @@ function statementCandidate(input: Omit<ParsedTradeCandidate, 'id' | 'sourceChan
   };
 }
 
+/**
+ * Mirrors Android's ImportTradeTimeResolver. Brokers often export a business
+ * date but no intraday time, so use a stable market-local ordering instead of
+ * midnight (which Web's US effective-date rule would treat as the prior day).
+ */
+export function resolveImportedTradeTimes(candidates: ParsedTradeCandidate[]): ParsedTradeCandidate[] {
+  const missingTimeIndexes = new Map<string, number>();
+  return candidates.map((candidate) => {
+    if (candidate.tradeTime.trim()) return candidate;
+    const baseMinutes = candidate.market === 'US' ? 21 * 60 + 35 : 9 * 60 + 35;
+    const key = [candidate.tradeDate, candidate.market, candidate.symbol.trim().toUpperCase(), candidate.tradeType].join('|');
+    const sequence = missingTimeIndexes.get(key) ?? 0;
+    missingTimeIndexes.set(key, sequence + 1);
+    const minutes = baseMinutes + sequence;
+    return {
+      ...candidate,
+      tradeTime: `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`,
+    };
+  });
+}
+
+/** Same Asia/Shanghai timestamp used by Android ImportTradeTimeResolver. */
+export function importedTradeTimestamp(tradeDate: string, tradeTime: string): number | null {
+  const date = /^(\d{4})-(\d{2})-(\d{2})$/.exec(tradeDate);
+  const time = /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(tradeTime);
+  if (!date || !time) return null;
+  const value = Date.UTC(Number(date[1]), Number(date[2]) - 1, Number(date[3]), Number(time[1]) - 8, Number(time[2]), Number(time[3] ?? 0));
+  return Number.isFinite(value) ? value : null;
+}
+
 function parseLongBridgeStatement(rawText: string): ParsedTradeCandidate[] {
   const lines = statementLines(rawText);
   const candidates: ParsedTradeCandidate[] = [];
@@ -240,7 +270,7 @@ function parseLongBridgeStatement(rawText: string): ParsedTradeCandidate[] {
     if (!codeMatch) continue;
     const rawSymbol = codeMatch[1];
     const symbol = market === 'HK' ? `${rawSymbol.replace(/\D/g, '').padStart(4, '0')}.HK` : rawSymbol.toUpperCase();
-    const time = lines.slice(index + 5, index + 18).map((value) => /(\d{2}:\d{2}:\d{2})\s+(?:HKT|EDT|EST)/.exec(value)?.[1]).filter((value): value is string => Boolean(value)).at(-1) ?? '00:00:00';
+    const time = lines.slice(index + 5, index + 18).map((value) => /(\d{2}:\d{2}:\d{2})\s+(?:HKT|EDT|EST)/.exec(value)?.[1]).filter((value): value is string => Boolean(value)).at(-1) ?? '';
     candidates.push(statementCandidate({
       platform: 'LONGBRIDGE',
       tradeType: /(买入|买⼊)/.test(side) ? 'BUY' : 'SELL',
@@ -291,7 +321,7 @@ function parseHsbcStatement(rawText: string): ParsedTradeCandidate[] {
       name: name || normalizedSymbol,
       currency: trade[2] as ParsedTradeCandidate['currency'],
       tradeDate,
-      tradeTime: '00:00:00',
+      tradeTime: '',
       price: Math.abs(price),
       quantity: Math.abs(quantity),
       commission: 0,
@@ -330,7 +360,7 @@ function parseUsmartStatement(rawText: string): ParsedTradeCandidate[] {
       name: symbol,
       currency: match[4] as ParsedTradeCandidate['currency'],
       tradeDate: match[7],
-      tradeTime: '00:00:00',
+      tradeTime: '',
       price: Math.abs(price),
       quantity: Math.abs(quantity),
       commission: platformFee,
@@ -343,15 +373,20 @@ function parseUsmartStatement(rawText: string): ParsedTradeCandidate[] {
 }
 
 function parseSchwabStatement(rawText: string): ParsedTradeCandidate[] {
-  const lines = statementLines(rawText);
+  let carriedDate = '';
+  const lines = statementLines(rawText).map((line) => {
+    const dated = /^(\d{2}\/\d{2})\s+/.exec(line);
+    if (dated) carriedDate = dated[1];
+    return !dated && carriedDate && /^(Purchase|Sale)\b/i.test(line) ? `${carriedDate} ${line}` : line;
+  });
   const candidates: ParsedTradeCandidate[] = [];
-  const year = /Statement Period.*?(20\d{2})/i.exec(rawText)?.[1] ?? new Date().getFullYear().toString();
+  const year = /(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2}\s*-\s*\d{1,2},?\s*(20\d{2})/i.exec(rawText)?.[1] ?? new Date().getFullYear().toString();
   let active = false;
   for (let index = 0; index < lines.length; index += 1) {
     if (/Transaction Details/i.test(lines[index])) { active = true; continue; }
     if (active && /Total Transactions|Endnotes|Terms and Conditions/i.test(lines[index])) active = false;
     if (!active) continue;
-    const row = /^(\d{1,2}\/\d{1,2})\s+(Purchase|Sale)\s+([A-Z][A-Z0-9.-]{0,9})\s+(.+?)\s+(\(?-?[\d,.]+\)?)\s+\$?([\d,.]+)(.*)$/i.exec(lines[index]);
+    const row = /^(\d{1,2}\/\d{1,2})\s+(Purchase|Sale)(?:\s+Reinvested Shares)?\s+([A-Z][A-Z0-9.-]{0,9})\s+(.+?)\s+(\(?-?[\d,.]+\)?)\s+\$?([\d,.]+)(.*)$/i.exec(lines[index]);
     if (!row) continue;
     const dateParts = row[1].split('/');
     const quantity = numberFromStatement(row[5]);
@@ -370,7 +405,7 @@ function parseSchwabStatement(rawText: string): ParsedTradeCandidate[] {
       name: row[4].trim(),
       currency: 'USD',
       tradeDate,
-      tradeTime: '00:00:00',
+      tradeTime: '',
       price: Math.abs(price),
       quantity: Math.abs(quantity),
       commission: 0,
@@ -380,6 +415,79 @@ function parseSchwabStatement(rawText: string): ParsedTradeCandidate[] {
     }));
   }
   return candidates;
+}
+
+const parseCsvRow = (line: string): string[] => {
+  const values: string[] = [];
+  let value = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index];
+    if (character === '"') {
+      if (quoted && line[index + 1] === '"') { value += '"'; index += 1; } else quoted = !quoted;
+    } else if (character === ',' && !quoted) { values.push(value); value = ''; } else value += character;
+  }
+  values.push(value);
+  return values;
+};
+
+/** Parses the CSV exported by Schwab's Transactions page. */
+export function parseSchwabTransactionsCsv(rawText: string): BrokerTextParseResult {
+  const rows = rawText.replace(/^\uFEFF/, '').split(/\r?\n/).filter((line) => line.trim()).map(parseCsvRow);
+  const header = rows.shift()?.map((value) => value.trim());
+  if (!header || !['Date', 'Action', 'Symbol', 'Description', 'Quantity', 'Price', 'Fees & Comm', 'Amount'].every((name) => header.includes(name))) {
+    return { candidates: [], warnings: ['未识别为嘉信 Transactions CSV；请从嘉信网页导出含 Date、Action、Symbol、Description 的 CSV。'] };
+  }
+  const column = (name: string) => header.indexOf(name);
+  const candidates: ParsedTradeCandidate[] = [];
+  const taxes: Array<{ date: string; symbol: string; amount: number }> = [];
+  let skipped = 0;
+  rows.forEach((row, index) => {
+    const [month, day, year] = (row[column('Date')] ?? '').split('/');
+    const tradeDate = month && day && year ? [year.padStart(4, '20'), month.padStart(2, '0'), day.padStart(2, '0')].join('-') : '';
+    const action = (row[column('Action')] ?? '').trim();
+    const symbol = (row[column('Symbol')] ?? 'CASH').trim().toUpperCase() || 'CASH';
+    const name = (row[column('Description')] ?? symbol).trim() || symbol;
+    const quantity = numberFromStatement(row[column('Quantity')] ?? '') ?? 1;
+    const price = numberFromStatement(row[column('Price')] ?? '');
+    const fee = Math.abs(numberFromStatement(row[column('Fees & Comm')] ?? '') ?? 0);
+    const amount = numberFromStatement(row[column('Amount')] ?? '');
+    if (!tradeDate || !action) { skipped += 1; return; }
+    const normalized = action.toUpperCase();
+    if (normalized === 'NRA TAX ADJ') {
+      const taxAmount = amount === null ? null : Math.abs(amount);
+      const dividend = taxAmount === null ? undefined : [...candidates].reverse().find((candidate) =>
+        candidate.tradeType === 'DIVIDEND' && candidate.tradeDate === tradeDate && candidate.symbol === symbol);
+      if (dividend && taxAmount !== null) dividend.tax += taxAmount;
+      else if (taxAmount !== null) taxes.push({ date: tradeDate, symbol, amount: taxAmount });
+      return;
+    }
+    const tradeType: ImportedTradeType | null =
+      normalized === 'BUY' || normalized === 'REINVEST SHARES' ? 'BUY'
+        : normalized === 'SELL' ? 'SELL'
+          : /DIVIDEND/.test(normalized) ? 'DIVIDEND'
+            : normalized === 'MARGIN INTEREST' ? 'INTEREST'
+              : normalized === 'DEPOSIT' ? 'DEPOSIT'
+                : normalized === 'WITHDRAWAL' ? 'WITHDRAW' : null;
+    if (!tradeType) { skipped += 1; return; }
+    const dividendTaxIndex = tradeType === 'DIVIDEND' ? taxes.findIndex((tax) => tax.date === tradeDate && tax.symbol === symbol) : -1;
+    const tax = dividendTaxIndex >= 0 ? taxes.splice(dividendTaxIndex, 1)[0].amount : 0;
+    const isSecurity = tradeType === 'BUY' || tradeType === 'SELL';
+    const value = isSecurity ? Math.abs(price ?? (amount ?? 0) / (quantity || 1)) : Math.abs(amount ?? 0);
+    if (!Number.isFinite(value) || value === 0) { skipped += 1; return; }
+    candidates.push(statementCandidate({
+      platform: 'SCHWAB', sourceChannel: 'CSV_TEXT', tradeType, market: 'US', symbol, name, currency: 'USD',
+      tradeDate, tradeTime: '', price: value, quantity: isSecurity ? Math.abs(quantity) : 1, commission: fee, tax,
+      rawText: row.join(','), ref: ['SWCSV', compactDate(tradeDate), normalized.replace(/\s+/g, '_'), symbol, String(index)].join('-'),
+    }));
+  });
+  for (const tax of taxes) candidates.push(statementCandidate({
+    platform: 'SCHWAB', sourceChannel: 'CSV_TEXT', tradeType: 'TAX', market: 'US', symbol: tax.symbol, name: tax.symbol + ' 股息税', currency: 'USD',
+    tradeDate: tax.date, tradeTime: '', price: tax.amount, quantity: 1, commission: 0, tax: 0, rawText: 'NRA Tax Adj',
+    ref: ['SWCSV', compactDate(tax.date), 'TAX', tax.symbol].join('-'),
+  }));
+  const warnings = skipped ? ['已跳过 ' + skipped + ' 条嘉信 CSV 中暂不影响账本的记录（如 Journal）。'] : [];
+  return { candidates: resolveImportedTradeTimes(candidates), warnings };
 }
 
 /** Deterministic, text-only first-release statement parsers. */
@@ -395,7 +503,7 @@ export function parsePdfStatementText(rawText: string): BrokerTextParseResult {
     parseSchwabStatement(normalized),
   ].sort((left, right) => right.length - left.length)[0] ?? [];
   return candidates.length
-    ? { candidates, warnings: [] }
+    ? { candidates: resolveImportedTradeTimes(candidates), warnings: [] }
     : { candidates: [], warnings: ['未识别为首发支持券商的文本结单，或结单中没有可导入交易。扫描件不受支持。'] };
 }
 
