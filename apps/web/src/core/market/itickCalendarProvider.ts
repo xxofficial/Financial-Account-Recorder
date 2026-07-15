@@ -19,19 +19,35 @@ export interface ItickCalendarCache {
 }
 
 export interface ItickHolidayResponse {
+  code?: number;
+  msg?: string;
   data?: Array<{
     c?: string;
-    ey?: string | number;
-    et?: string;
-    v?: string | string[];
+    d?: string;
+    t?: string;
+    v?: string;
   }>;
 }
 
 export const ITICK_CALENDAR_TOKEN_KEY = 'itick_calendar_api_token';
 export const ITICK_CALENDAR_CACHE_KEY = 'itick_calendar_cache_v1';
-const ITICK_CALENDAR_URL = 'https://api.itick.org/symbol/holidays';
+const ITICK_CALENDAR_URL = 'https://api.itick.org/symbol/v2/holidays';
+const ITICK_CALENDAR_MARKETS = ['HK', 'US'] as const;
 const RETRY_INTERVAL_MS = 15 * 60 * 1000;
 let syncInFlight: Promise<ItickCalendarCache | undefined> | undefined;
+
+/**
+ * iTick documents a bare token in the `token` header. Users commonly paste a
+ * value copied from an HTTP example as `Bearer <token>` (or with quotes),
+ * which the API treats as a different token and returns E002/auth failed.
+ */
+export function normalizeItickToken(value: string): string {
+  return value
+    .trim()
+    .replace(/^(?:Bearer\s+|token\s*:\s*|api[- ]?key\s*:\s*)/i, '')
+    .replace(/^["']|["']$/g, '')
+    .trim();
+}
 
 function marketForCode(code: string | undefined): CalendarMarket | undefined {
   const normalized = code?.trim().toUpperCase();
@@ -44,6 +60,7 @@ function marketForCode(code: string | undefined): CalendarMarket | undefined {
 function parseDates(value: string | string[] | undefined): string[] {
   const values = Array.isArray(value) ? value : (() => {
     if (!value) return [];
+    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return [value];
     try {
       const parsed = JSON.parse(value);
       return Array.isArray(parsed) ? parsed : [];
@@ -59,10 +76,8 @@ export function parseItickHolidayResponse(payload: ItickHolidayResponse): ItickC
   for (const item of payload.data ?? []) {
     const market = marketForCode(item.c);
     if (!market) continue;
-    const closedDates = parseDates(item.v);
+    const closedDates = parseDates(item.d);
     const years = new Set(closedDates.map((date) => Number(date.slice(0, 4))));
-    const declaredYear = Number(item.ey);
-    if (Number.isInteger(declaredYear) && declaredYear > 1900) years.add(declaredYear);
     for (const year of years) {
       const key = `${market}:${year}`;
       const current = merged.get(key);
@@ -71,7 +86,7 @@ export function parseItickHolidayResponse(payload: ItickHolidayResponse): ItickC
         market,
         year,
         closedDates: Array.from(new Set([...(current?.closedDates ?? []), ...datesForYear])).sort(),
-        tradingHours: item.et ?? current?.tradingHours,
+        tradingHours: item.t ?? current?.tradingHours,
       });
     }
   }
@@ -98,7 +113,7 @@ function readCache(value: unknown): ItickCalendarCache | undefined {
 
 async function getToken(): Promise<string> {
   const setting = await db.appSettings.get(ITICK_CALENDAR_TOKEN_KEY);
-  return typeof setting?.value === 'string' ? setting.value.trim() : '';
+  return typeof setting?.value === 'string' ? normalizeItickToken(setting.value) : '';
 }
 
 async function getCache(): Promise<ItickCalendarCache | undefined> {
@@ -119,7 +134,23 @@ function cacheCoversCurrentYear(cache: ItickCalendarCache | undefined, now: numb
   if (!cache?.fetchedAt) return false;
   const currentYear = new Date(now).getUTCFullYear();
   const fetchedYear = new Date(cache.fetchedAt).getUTCFullYear();
-  return fetchedYear === currentYear && cache.records.some((record) => record.year === currentYear);
+  return fetchedYear === currentYear && ITICK_CALENDAR_MARKETS.every((market) => cache.records.some((record) => record.market === market && record.year === currentYear));
+}
+
+async function fetchMarketCalendar(code: string, token: string): Promise<ItickCalendarRecord[]> {
+  const response = await marketFetch(`${ITICK_CALENDAR_URL}?code=${code}`, { headers: { accept: 'application/json', token } });
+  if (!response.ok) throw new Error(`iTick ${code} HTTP ${response.status}`);
+  const payload = await response.json() as ItickHolidayResponse;
+  if (payload.code !== undefined && payload.code !== 0) {
+    const message = payload.msg || `business error ${payload.code}`;
+    if (String(payload.code).toUpperCase() === 'E002' || /auth\s*failed|authentication failed/i.test(message)) {
+      throw new Error(`iTick ${code}: auth failed（Token 无效或已过期，请从 iTick 控制台重新复制 API Key）`);
+    }
+    throw new Error(`iTick ${code}: ${message}`);
+  }
+  const records = parseItickHolidayResponse(payload).filter((record) => record.market === code);
+  if (!records.length) throw new Error(`iTick ${code} 日历响应为空`);
+  return records;
 }
 
 async function syncItickCalendarInternal(force: boolean): Promise<ItickCalendarCache | undefined> {
@@ -129,18 +160,26 @@ async function syncItickCalendarInternal(force: boolean): Promise<ItickCalendarC
   const now = Date.now();
   // Holiday calendars are annual data. Keep a successfully fetched current-year
   // calendar until the year changes; manual refresh remains available in settings.
-  if (!force && cacheCoversCurrentYear(existing, now)) return existing;
+  if (!force && cacheCoversCurrentYear(existing, now) && !existing?.lastError) return existing;
   if (!force && existing?.lastAttemptAt && now - existing.lastAttemptAt < RETRY_INTERVAL_MS) return existing;
 
   const attempt: ItickCalendarCache = { provider: 'itick', fetchedAt: existing?.fetchedAt ?? 0, records: existing?.records ?? [], lastAttemptAt: now };
   try {
-    const response = await marketFetch(ITICK_CALENDAR_URL, { headers: { accept: 'application/json', token } });
-    if (!response.ok) throw new Error(`iTick HTTP ${response.status}`);
-    const records = parseItickHolidayResponse(await response.json() as ItickHolidayResponse);
-    if (!records.length) throw new Error('iTick calendar response is empty');
     const byKey = new Map((existing?.records ?? []).map((record) => [`${record.market}:${record.year}`, record]));
-    for (const record of records) byKey.set(`${record.market}:${record.year}`, record);
-    const next: ItickCalendarCache = { provider: 'itick', fetchedAt: now, records: Array.from(byKey.values()), lastAttemptAt: now };
+    const results = await Promise.allSettled(ITICK_CALENDAR_MARKETS.map((market) => fetchMarketCalendar(market, token)));
+    const failures: string[] = [];
+    results.forEach((result) => {
+      if (result.status === 'fulfilled') result.value.forEach((record) => byKey.set(`${record.market}:${record.year}`, record));
+      else failures.push(result.reason instanceof Error ? result.reason.message : String(result.reason));
+    });
+    const complete = failures.length === 0 && ITICK_CALENDAR_MARKETS.every((market) => Array.from(byKey.values()).some((record) => record.market === market && record.year === new Date(now).getUTCFullYear()));
+    const next: ItickCalendarCache = {
+      provider: 'itick',
+      fetchedAt: complete ? now : existing?.fetchedAt ?? 0,
+      records: Array.from(byKey.values()),
+      lastAttemptAt: now,
+      lastError: failures.length ? failures.join('; ') : undefined,
+    };
     await saveCache(next);
     return next;
   } catch (error) {

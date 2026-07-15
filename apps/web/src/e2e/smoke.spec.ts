@@ -30,3 +30,17 @@ test('extracts a local text PDF statement through the browser importer', async (
   await page.getByLabel('选择 PDF 结单').setInputFiles(schwabStatementSample);
   await expect(page.getByText(/SCHWAB ·/).first()).toBeVisible({ timeout: 20_000 });
 });
+
+test('removes legacy data routes instead of preserving aliases', async ({ page }) => {
+  await page.goto('/#/import-export');
+  await expect(page).toHaveURL(/#\/$/);
+  await page.goto('/#/market-cache');
+  await expect(page).toHaveURL(/#\/$/);
+});
+
+test('keeps global synchronization outside platform configuration', async ({ page }) => {
+  await page.goto('/#/settings');
+  await expect(page.getByRole('heading', { name: '自动同步', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '交易日历自动同步' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: '平台配置' })).toBeVisible();
+});

@@ -3,7 +3,9 @@ import {
   PortfolioCalculator, 
   PortfolioSecurityRules, 
   ExchangeRates, 
-  convertToCny 
+  convertToCny,
+  formatQuantity,
+  normalizeQuantity,
 } from '../core/portfolio/portfolioCalculator';
 import { Transaction, QuoteSnapshot } from '../db/schema';
 
@@ -81,6 +83,25 @@ describe('Portfolio Calculator & Rules', () => {
       // Split transaction at 05:30:00 should stay current day
       const date4 = PortfolioSecurityRules.effectiveTradeDate('2026-07-02', '05:30:00', 'US', 'SPLIT');
       expect(date4).toBe('2026-07-02');
+    });
+  });
+
+  describe('Quantity precision', () => {
+    it('normalizes IEEE-754 accumulation to four decimal places', () => {
+      expect(normalizeQuantity(-27.000000000000028)).toBe(-27);
+      expect(formatQuantity(-27.000000000000028)).toBe('-27');
+      expect(formatQuantity(153.3724)).toBe('153.3724');
+    });
+
+    it('keeps fractional positions precise after repeated trades', () => {
+      const txs = Array.from({ length: 10 }, (_, index) => mockTx({
+        tradeType: 'BUY',
+        quantity: 0.1,
+        commission: 0,
+        tax: 0,
+        createdAt: index,
+      }));
+      expect(calculator.calculate(txs, [], defaultRates).positions['US:AAPL'].quantity).toBe(1);
     });
   });
 

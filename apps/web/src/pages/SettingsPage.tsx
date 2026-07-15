@@ -6,6 +6,7 @@ import { isAndroidNativeRuntime, nativeSecret, nativeSecretKeyForProvider, nativ
 import AndroidEmailSyncCard from '../components/AndroidEmailSyncCard';
 import AppUpdateCard from '../components/AppUpdateCard';
 import PlatformSettingsSection from '../components/PlatformSettingsSection';
+import AutomationSettingsSection from '../components/AutomationSettingsSection';
 import { useAppShell } from '../app/AppShell';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 
@@ -88,6 +89,7 @@ export default function SettingsPage() {
         <label className="settings-preference-row"><span className="settings-preference-label">主题色</span><select value={themePreference} onChange={e => setThemePreference(e.target.value as typeof themePreference)}><option value="system">跟随系统</option><option value="light">亮色</option><option value="dark">暗色</option></select></label>
       </div>
     </section>
+    <AutomationSettingsSection />
     <PlatformSettingsSection activePlatform={activePlatform} enabledPlatforms={enabledPlatforms} />
     {isAndroid && <section className="settings-group settings-services-group"><div className="settings-group-heading"><h2>Android 服务</h2><p>应用更新和邮箱同步。</p></div><AppUpdateCard /><AndroidEmailSyncCard /></section>}
     <details className="settings-advanced" open={advancedOpen} onToggle={event => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}>

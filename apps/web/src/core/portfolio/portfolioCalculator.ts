@@ -27,6 +27,19 @@ export function convertToCny(value: number, market: MarketType, exchangeRates: E
   return value * rateToCny(exchangeRates, market);
 }
 
+/** User-entered quantities use a 0.0001 step across the Web and Android apps. */
+export const QUANTITY_DECIMAL_PLACES = 4;
+
+export function normalizeQuantity(value: number): number {
+  const scale = 10 ** QUANTITY_DECIMAL_PLACES;
+  const normalized = Math.round((value + Number.EPSILON) * scale) / scale;
+  return Object.is(normalized, -0) ? 0 : normalized;
+}
+
+export function formatQuantity(value: number): string {
+  return normalizeQuantity(value).toFixed(QUANTITY_DECIMAL_PLACES).replace(/\.?(0+)$/, '');
+}
+
 // 3. 平台证券辅助规则 (PortfolioSecurityRules)
 export const PortfolioSecurityRules = {
   US_TIMEZONE_CUTOFF: '06:00',
@@ -539,9 +552,9 @@ export class PortfolioCalculator {
     if (!current) return;
 
     const qtyDelta = transaction.quantity;
-    const nextQuantity = current.quantity > 0.0 
+    const nextQuantity = this.cleanQuantity(current.quantity > 0.0
       ? Math.max(0.0, current.quantity - qtyDelta)
-      : Math.min(0.0, current.quantity + qtyDelta);
+      : Math.min(0.0, current.quantity + qtyDelta));
 
     const fraction = current.quantity === 0.0 
       ? 1.0 
@@ -579,6 +592,7 @@ export class PortfolioCalculator {
   }
 
   private cleanQuantity(qty: number): number {
-    return this.isAlmostZero(qty) ? 0.0 : qty;
+    const normalized = normalizeQuantity(qty);
+    return this.isAlmostZero(normalized) ? 0.0 : normalized;
   }
 }
