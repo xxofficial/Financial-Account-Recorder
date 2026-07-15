@@ -13,7 +13,10 @@
     "typecheck": "npm run typecheck --workspace @recoder/web",
     "test": "npm run test --workspace @recoder/web",
     "build": "npm run build --workspace @recoder/web",
+    "build:pages": "npm run build:pages --workspace @recoder/web",
+    "preview:pages": "npm run preview:pages --workspace @recoder/web",
     "test:e2e": "npm run test:e2e --workspace @recoder/web",
+    "test:pages-preview": "npm run test:pages-preview --workspace @recoder/web",
     "android:sync": "npm run build && cap sync android",
     "android:open": "cap open android"
   },

@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { backupService } from '../core/backup/backupService';
 import { db } from '../db/localDb';
+import { securityDetailName, securityDetailPath } from '../core/portfolio/securityDetailRoute';
 
 // Samples are deliberately gitignored. CI skips this suite; a developer with
 // the supplied anonymised backup gets a real v4 -> v5 migration regression.
@@ -30,5 +31,10 @@ localDescribe('local anonymised v4 migration sample', () => {
     expect(exported.version).toBe(5);
     expect(exported.transactions).toHaveLength(await db.transactions.count());
     expect(exported.ledgers).toHaveLength(await db.ledgers.count());
-  });
+
+    const stOption = (await db.transactions.toArray()).find((transaction) => transaction.name === 'ST 2026-06-18 Call @ 57');
+    expect(stOption).toMatchObject({ market: 'US', symbol: 'ST 260618C57', assetType: 'OPTION', underlyingSymbol: 'ST' });
+    expect(securityDetailPath(stOption!)).toBe('/analysis/stock/ST/US');
+    expect(securityDetailName('ST', undefined, undefined)).toBe('ST');
+  }, 60_000);
 });

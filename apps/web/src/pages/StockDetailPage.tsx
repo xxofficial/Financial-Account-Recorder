@@ -1,16 +1,18 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { Calendar, FileText, Info, RefreshCw, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
 import { useAppShell } from '../app/AppShell';
 import { PortfolioCalculator, ExchangeRates, PortfolioSecurityRules, convertToCny } from '../core/portfolio/portfolioCalculator';
+import { securityDetailName } from '../core/portfolio/securityDetailRoute';
 import { DisplayCurrency, TradeTypeLabels } from '../shared/models';
 import { type Transaction } from '../db/schema';
 import StockChart from '../components/StockChart';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
+import { cacheService } from '../core/market/marketDataCacheService';
 import { historicalBarsToChartBars, type ChartRange, type CandlestickColorScheme } from '../core/chart/chartDataUtils';
 
 const calculator = new PortfolioCalculator();
@@ -83,6 +85,19 @@ export default function StockDetailPage() {
     return tx.market === targetMarket && attrSymbol.toUpperCase() === targetSymbol.toUpperCase() &&
       (activePlatform === null || tx.platform === activePlatform);
   }), [activePlatform, rawTxns, targetMarket, targetSymbol]);
+
+  const hasStockDisplayName = useMemo(() => {
+    const quoteName = quotes.find((quote) => quote.symbol === targetSymbol && quote.market === targetMarket)?.name;
+    if (quoteName && quoteName.trim() && quoteName.trim().toUpperCase() !== targetSymbol.toUpperCase()) return true;
+    const stockName = securityTxns.find((tx) => tx.assetType !== 'OPTION')?.name;
+    return Boolean(stockName?.trim() && stockName.trim().toUpperCase() !== targetSymbol.toUpperCase());
+  }, [quotes, securityTxns, targetMarket, targetSymbol]);
+
+  useEffect(() => {
+    if (!targetSymbol || targetMarket === 'CASH' || hasStockDisplayName) return;
+    // The resolver writes a quote snapshot; useLiveQuery then refreshes the title.
+    void cacheService.resolveSecurityName(targetSymbol, targetMarket).catch(() => null);
+  }, [hasStockDisplayName, targetMarket, targetSymbol]);
 
   const securityDateBounds = useMemo(() => {
     const dates = securityTxns.map((tx) => tx.tradeDate).sort();
@@ -161,7 +176,7 @@ export default function StockDetailPage() {
     const sorted = [...currentTxns].sort((a, b) => `${b.tradeDate} ${b.tradeTime}`.localeCompare(`${a.tradeDate} ${a.tradeTime}`));
     const titleQuote = quotes.find((quote) => quote.symbol === targetSymbol && quote.market === targetMarket);
     return {
-      securityName: titleQuote?.name || securityTxns[0]?.name || targetSymbol,
+      securityName: securityDetailName(targetSymbol, titleQuote?.name, stockTxns[0]?.name),
       stockPnl, optionPnl, totalPnl: stockPnl + optionPnl,
       buyCost, sellProceeds, fees, closingValue, stockOpeningValue, optionOpeningValue,
       totalQuantity: activeTab === 'OPTION' ? optionRange.reduce((sum, tx) => sum + (tx.tradeType === 'BUY' ? tx.quantity : tx.tradeType === 'SELL' ? -tx.quantity : 0), 0) : (stockAfter?.quantity ?? 0),

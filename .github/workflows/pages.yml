@@ -35,7 +35,10 @@ jobs:
       # live upstream endpoints; keep the Pages gate deterministic and run the
       # application smoke suite here.
       - run: npm run test:e2e --workspace @recoder/web -- src/e2e/smoke.spec.ts
-      - run: npm run build
+      # Build and test the exact GitHub Pages project-path deployment locally
+      # inside the runner. This catches root-relative static assets before an
+      # artifact can replace the currently published site.
+      - run: npm run test:pages-preview
       - uses: actions/configure-pages@v5
         with:
           enablement: true

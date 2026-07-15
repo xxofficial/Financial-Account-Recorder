@@ -6,14 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:pages": "tsc -b && vite build --mode pages",
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
+    "preview:pages": "vite preview --base /Financial-Account-Recorder/ --host 127.0.0.1 --port 4281 --strictPort",
     "build:market-probe": "tsc -b && vite build --mode market-probe",
     "preview:market-probe": "vite preview",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:pages-preview": "playwright test -c playwright.pages.config.ts"
   },
   "dependencies": {
     "@capacitor/core": "^8.0.0",

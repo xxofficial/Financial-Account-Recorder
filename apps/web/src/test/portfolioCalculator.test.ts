@@ -65,6 +65,8 @@ describe('Portfolio Calculator & Rules', () => {
       expect(PortfolioSecurityRules.attributionSymbol('AAPL', 'STOCK', null)).toBe('AAPL');
       expect(PortfolioSecurityRules.attributionSymbol('AAPL 260717C180', 'OPTION', 'AAPL')).toBe('AAPL');
       expect(PortfolioSecurityRules.attributionSymbol('AAPL 260717C180', 'OPTION', null)).toBe('AAPL');
+      expect(PortfolioSecurityRules.attributionSymbol('ST 260618C57', 'OPTION', 'ST.US')).toBe('ST');
+      expect(PortfolioSecurityRules.attributionKey('ST 260618C57', 'US', 'OPTION', 'ST.US')).toBe('US:ST');
     });
 
     it('3. should handle US night trading effective date', () => {

@@ -5,9 +5,9 @@ import { VitePWA } from 'vite-plugin-pwa';
 import path from 'path';
 
 // https://vite.dev/config/
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
   // Relative assets keep the PWA deployable under GitHub Pages project paths.
-  base: process.env.GITHUB_ACTIONS ? './' : '/',
+  base: process.env.GITHUB_ACTIONS || mode === 'pages' ? './' : '/',
   plugins: [
     react(),
     VitePWA({
@@ -64,4 +64,4 @@ export default defineConfig({
     include: ['src/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['src/e2e/**']
   }
-});
+}));

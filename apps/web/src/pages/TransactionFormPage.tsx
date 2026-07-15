@@ -476,7 +476,9 @@ export default function TransactionFormPage() {
       if (isEdit && id) await txnRepo.update(Number(id), payload);
       else await txnRepo.create(payload);
       }
-      if (await settingRepo.get('auto_sync_after_transaction')) {
+      // Missing settings use the product default: queue a repair after a transaction.
+      // A user can still explicitly opt out by saving `false` in Settings.
+      if ((await settingRepo.get('auto_sync_after_transaction')) !== false) {
         await marketCacheManager.detectAndQueueMissingRanges();
         await MarketTaskExecutor.startOrWakeMarketExecutor();
       }

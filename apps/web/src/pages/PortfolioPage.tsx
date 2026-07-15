@@ -3,7 +3,8 @@ import { useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { ChevronDown } from 'lucide-react';
 import { db } from '../db/localDb';
-import { PortfolioCalculator, ExchangeRates, PortfolioSecurityRules } from '../core/portfolio/portfolioCalculator';
+import { PortfolioCalculator, ExchangeRates } from '../core/portfolio/portfolioCalculator';
+import { securityDetailPath } from '../core/portfolio/securityDetailRoute';
 import { CurrencyType, DisplayCurrency } from '../shared/models';
 import { useAppShell } from '../app/AppShell';
 
@@ -93,8 +94,7 @@ export default function PortfolioPage() {
           const totalProfitPercent = item.averageCost === 0 ? 0 : ((price - item.averageCost) / item.averageCost) * 100;
           const dayProfit = quote?.change === null || quote?.change === undefined ? null : quote.change * item.quantity * multiplier;
           const dayProfitPercent = quote?.changePercent ?? null;
-          const symbol = PortfolioSecurityRules.attributionSymbol(item.symbol, item.assetType, item.underlyingSymbol);
-          return <button key={`${item.market}:${item.symbol}`} className="portfolio-holding-row" onClick={() => navigate(`/analysis/stock/${symbol}/${item.market}`)}>
+          return <button key={`${item.market}:${item.symbol}`} className="portfolio-holding-row" onClick={() => navigate(securityDetailPath(item))}>
             <span className="portfolio-holding-main"><span className="portfolio-holding-title">{item.name || item.symbol}{item.assetType === 'OPTION' && <span className="portfolio-option-badge">期权</span>}</span><span>{item.symbol} · {item.market === 'US' ? '美股' : item.market === 'HK' ? '港股' : item.market === 'A_SHARE' ? 'A股' : '现金'} · {item.quantity} {item.assetType === 'OPTION' ? '张' : '股'} · {localCurrency(item.market)}{item.averageCost.toFixed(2)}</span></span>
             <span className="portfolio-holding-profit"><strong>{localCurrency(item.market)}{price.toFixed(2)}</strong><span className={pnlClass(dayProfit)}>当日 {dayProfit === null ? '—' : `${dayProfit >= 0 ? '+' : ''}${money(dayProfit)} (${dayProfitPercent === null ? '—' : `${dayProfitPercent >= 0 ? '+' : ''}${dayProfitPercent.toFixed(2)}%`})`}</span><span className={pnlClass(hasQuote ? totalProfit : null)}>持仓 {hasQuote ? `${totalProfit >= 0 ? '+' : ''}${money(totalProfit)} (${totalProfitPercent >= 0 ? '+' : ''}${totalProfitPercent.toFixed(2)}%)` : '—'}</span></span>
           </button>;

@@ -61,7 +61,13 @@ export const PortfolioSecurityRules = {
 
   attributionSymbol(symbol: string, assetType: string | null | undefined, underlyingSymbol: string | null | undefined): string {
     if (this.isOptionAsset(assetType, symbol)) {
-      return underlyingSymbol?.trim() || symbol.split(' ')[0] || symbol;
+      // Legacy Android/backup records can carry an Eastmoney-style US suffix
+      // (for example, `ST.US`) even though market is stored separately.  Keep
+      // the canonical Web identity as `ST` + `US`, so option attribution,
+      // navigation and stock-detail cache lookups all resolve to the same key.
+      return (underlyingSymbol?.trim() || symbol.split(' ')[0] || symbol)
+        .replace(/\.US$/i, '')
+        .toUpperCase();
     }
     return symbol;
   },

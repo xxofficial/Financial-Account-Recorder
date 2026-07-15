@@ -45,7 +45,9 @@ const platformIconNames: Partial<Record<PlatformType, string>> = {
 };
 
 async function prepareMarketSyncOnAppOpen() {
-  const defaultEnabled = isAndroidNativeRuntime();
+  // Web and Android now both have keyless stock-sdk coverage for stocks.
+  // Keep the defaults aligned, while preserving any explicit user choice.
+  const defaultEnabled = true;
   const values = await Promise.all(AUTO_SYNC_SETTINGS.map((key) => db.appSettings.get(key)));
   for (let index = 0; index < AUTO_SYNC_SETTINGS.length; index += 1) {
     if (!values[index]) await db.appSettings.put({ key: AUTO_SYNC_SETTINGS[index], value: defaultEnabled, updatedAt: Date.now() });

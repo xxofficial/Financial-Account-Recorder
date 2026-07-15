@@ -26,6 +26,14 @@ push main
 
 ## 2. 发布前检查
 
+不要把线上 Pages 当作首轮测试环境。任何会影响 Web 界面、静态资源路径或 PWA 缓存的改动，都先在本地执行 Pages 预演：
+
+```powershell
+npm run test:pages-preview
+```
+
+该命令会在本机生成生产构建，并以 `Financial-Account-Recorder` 项目子路径启动临时站点；不会提交代码、推送远端或修改线上 Pages。通过后，若需要人工检查，可另开终端执行 `npm run build:pages` 与 `npm run preview:pages`，然后访问 `http://127.0.0.1:4281/Financial-Account-Recorder/`。
+
 在推送前执行：
 
 ```powershell
@@ -36,7 +44,7 @@ npm ci
 npm run lint
 npm run typecheck
 npm run test --workspace @recoder/web -- --testTimeout=30000
-npm run build
+npm run build:pages
 ```
 
 确认构建产物存在：

@@ -63,4 +63,18 @@ describe('security suggestions', () => {
     expect(warning).toHaveBeenCalled();
     warning.mockRestore();
   });
+
+  it('caches a resolved stock name for an option-only detail page', async () => {
+    const service = new MarketDataCacheService() as any;
+    service.getActiveProviders = async () => [{
+      apiKey: '',
+      provider: {
+        name: 'stock-sdk', supportsAssetType: () => true, supportsMarket: () => true,
+        searchSecurity: async () => ({ ok: true, status: 'success', provider: 'stock-sdk', data: { symbol: 'ST', market: 'US', name: 'Sensata Technologies', assetType: 'STOCK' } }),
+      },
+    }];
+
+    await expect(service.resolveSecurityName('ST', 'US')).resolves.toBe('Sensata Technologies');
+    await expect(db.quoteSnapshots.get('US:ST')).resolves.toMatchObject({ symbol: 'ST', market: 'US', name: 'Sensata Technologies', assetType: 'STOCK' });
+  });
 });

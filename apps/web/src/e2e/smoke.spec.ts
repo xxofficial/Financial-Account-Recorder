@@ -50,3 +50,14 @@ test('keeps global synchronization outside platform configuration', async ({ pag
   await expect(page.getByRole('heading', { name: '交易日历自动同步' })).toBeVisible();
   await expect(page.getByRole('heading', { name: '平台配置' })).toBeVisible();
 });
+
+test('uses Android-style sheets for display preferences', async ({ page }) => {
+  await page.goto('/#/settings');
+  const colorPreference = page.getByRole('button', { name: /涨跌颜色.*红涨绿跌/ });
+  await expect(colorPreference).toBeVisible();
+  await expect(page.locator('.settings-preference-row select')).toHaveCount(0);
+  await colorPreference.click();
+  await expect(page.getByRole('dialog', { name: '选择涨跌颜色' })).toBeVisible();
+  await page.getByRole('button', { name: /绿涨红跌/ }).click();
+  await expect(page.getByRole('button', { name: /涨跌颜色.*绿涨红跌/ })).toBeVisible();
+});

@@ -12,6 +12,7 @@ npm run typecheck
 npm run test
 npm run build
 npm run test:e2e
+npm run test:pages-preview
 ```
 
 Playwright 端到端测试需要预先安装 Chromium：

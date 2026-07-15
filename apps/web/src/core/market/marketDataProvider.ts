@@ -11,6 +11,13 @@ export interface MarketProviderSecurityInfo {
 /** A lightweight search result.  Suggestions must never imply a cache write. */
 export type MarketProviderSecuritySuggestion = MarketProviderSecurityInfo;
 
+/** MarketData.app treats `to` as an exclusive date boundary. */
+export function marketDataExclusiveEndDate(inclusiveEndDate: string): string {
+  const date = new Date(`${inclusiveEndDate}T00:00:00Z`);
+  date.setUTCDate(date.getUTCDate() + 1);
+  return date.toISOString().slice(0, 10);
+}
+
 export interface MarketDataProvider {
   readonly name: string;
   testConnection(apiKey: string): Promise<MarketDataResult<boolean>>;
@@ -267,7 +274,10 @@ export class MarketDataAppProvider implements MarketDataProvider {
     let url = '';
     if (assetType.toUpperCase() === 'OPTION') {
       const occSymbol = this.formatOptionSymbol(symbol);
-      url = `https://api.marketdata.app/v1/options/quotes/${encodeURIComponent(occSymbol)}/?from=${startDate}&to=${endDate}`;
+      // The application API is inclusive at both ends, while MarketData.app's
+      // option quote endpoint excludes `to`.  Sending the next calendar day
+      // keeps a one-day request (including an expiry date) from becoming empty.
+      url = `https://api.marketdata.app/v1/options/quotes/${encodeURIComponent(occSymbol)}/?from=${startDate}&to=${marketDataExclusiveEndDate(endDate)}`;
     } else {
       url = `https://api.marketdata.app/v1/stocks/candles/D/${symbol}/?from=${startDate}&to=${endDate}`;
     }

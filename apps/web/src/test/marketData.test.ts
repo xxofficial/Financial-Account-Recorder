@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AndroidDefaultMarketProvider } from '../core/market/androidDefaultMarketProvider';
 import { HistoricalRequestPlanner, INITIAL_CAPABILITIES } from '../core/market/HistoricalRequestPlanner';
-import { MarketDataAppProvider } from '../core/market/marketDataProvider';
+import { MarketDataAppProvider, marketDataExclusiveEndDate } from '../core/market/marketDataProvider';
 import { StockSdkProvider } from '../core/market/stockSdkProvider';
 
 describe('stock-sdk stock routing', () => {
@@ -38,5 +38,10 @@ describe('stock-sdk stock routing', () => {
     expect(android.supportsAssetType('STOCK')).toBe(false);
     expect(android.supportsMarket('HK')).toBe(false);
     expect(android.supportsAssetType('OPTION')).toBe(true);
+  });
+
+  it('keeps the requested option end date when MarketData requires an exclusive boundary', () => {
+    expect(marketDataExclusiveEndDate('2026-07-08')).toBe('2026-07-09');
+    expect(marketDataExclusiveEndDate('2026-12-31')).toBe('2027-01-01');
   });
 });

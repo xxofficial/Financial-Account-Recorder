@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Check, ChevronRight, Database, Key, ShieldAlert } from 'lucide-react';
+import { Check, ChevronRight, Database, Key, ShieldAlert, TrendingDown, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
 import { MarketDataAppProvider } from '../core/market/marketDataProvider';
 import { isAndroidNativeRuntime, nativeSecret, nativeSecretKeyForProvider, nativeSecretPlaceholder } from '../platform/nativeRuntime';
@@ -16,9 +16,10 @@ export default function SettingsPage() {
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [candlestickColorScheme, setCandlestickColorScheme] = useState('red_up');
   const [themePreference, setThemePreference] = useState<'system' | 'light' | 'dark'>('system');
-  const [autoSyncAfterImport, setAutoSyncAfterImport] = useState(isAndroid);
-  const [autoSyncAfterTransaction, setAutoSyncAfterTransaction] = useState(isAndroid);
-  const [autoSyncDailyClose, setAutoSyncDailyClose] = useState(isAndroid);
+  const [autoSyncAfterImport, setAutoSyncAfterImport] = useState(true);
+  const [autoSyncAfterTransaction, setAutoSyncAfterTransaction] = useState(true);
+  const [autoSyncDailyClose, setAutoSyncDailyClose] = useState(true);
+  const [preferenceSheet, setPreferenceSheet] = useState<'candlestick' | 'theme' | null>(null);
   const [marketdataEnabled, setMarketdataEnabled] = useState(false);
   const [marketdataKey, setMarketdataKey] = useState('');
   const [hasMarketdataSecret, setHasMarketdataSecret] = useState(false);
@@ -35,9 +36,9 @@ export default function SettingsPage() {
       ]);
       if (scheme && ['red_up', 'green_up'].includes(scheme.value)) setCandlestickColorScheme(scheme.value);
       if (theme && ['system', 'light', 'dark'].includes(theme.value)) setThemePreference(theme.value);
-      setAutoSyncAfterImport(Boolean(afterImport?.value ?? isAndroid));
-      setAutoSyncAfterTransaction(Boolean(afterTransaction?.value ?? isAndroid));
-      setAutoSyncDailyClose(Boolean(dailyClose?.value ?? isAndroid));
+      setAutoSyncAfterImport(Boolean(afterImport?.value ?? true));
+      setAutoSyncAfterTransaction(Boolean(afterTransaction?.value ?? true));
+      setAutoSyncDailyClose(Boolean(dailyClose?.value ?? true));
       setMarketdataEnabled(marketdata?.enabled === 1);
       if (!isAndroid) setMarketdataKey(marketdata?.apiKey || '');
       if (isAndroid) setHasMarketdataSecret((await nativeSecret.has({ key: nativeSecretKeyForProvider('marketdata') })).exists);
@@ -85,8 +86,8 @@ export default function SettingsPage() {
     <section className="settings-group settings-global-group">
       <div className="settings-group-heading"><h2>通用偏好</h2><p>影响所有账本、平台和页面的展示方式。</p></div>
       <div className="glass-card settings-preference-list">
-        <label className="settings-preference-row"><span className="settings-preference-label">涨跌颜色</span><select value={candlestickColorScheme} onChange={e => setCandlestickColorScheme(e.target.value)}><option value="red_up">红涨绿跌</option><option value="green_up">绿涨红跌</option></select></label>
-        <label className="settings-preference-row"><span className="settings-preference-label">主题色</span><select value={themePreference} onChange={e => setThemePreference(e.target.value as typeof themePreference)}><option value="system">跟随系统</option><option value="light">亮色</option><option value="dark">暗色</option></select></label>
+        <button type="button" className="settings-preference-row" onClick={() => setPreferenceSheet('candlestick')}><span className="settings-preference-label">涨跌颜色</span><span className="settings-preference-value"><span className={`market-scheme-icon ${candlestickColorScheme}`} aria-hidden="true"><TrendingUp size={16} /><TrendingDown size={16} /></span>{candlestickColorScheme === 'green_up' ? '绿涨红跌' : '红涨绿跌'}<ChevronRight size={18} /></span></button>
+        <button type="button" className="settings-preference-row" onClick={() => setPreferenceSheet('theme')}><span className="settings-preference-label">主题色</span><span className="settings-preference-value">{{ system: '跟随系统', light: '亮色', dark: '暗色' }[themePreference]}<ChevronRight size={18} /></span></button>
       </div>
     </section>
     <AutomationSettingsSection />
@@ -108,5 +109,7 @@ export default function SettingsPage() {
       </form>
     </details>
     <details className="settings-advanced settings-advanced-extra"><summary><span><strong>存储与缓存</strong><small>本地存储保护与应用诊断</small></span><ChevronRight size={18} /></summary><div className="glass-card"><h3><Database size={16} /> 本地存储</h3><p>已用空间：{formatBytes(storageUsage.usage)} / 预估配额：{formatBytes(storageUsage.quota)}</p><p>{isPersisted ? '本地存储已受系统保护。' : '本地存储未受持久化保护。'}</p>{!isPersisted && <button type="button" onClick={() => void navigator.storage?.persist?.().then(setIsPersisted)}><ShieldAlert size={14} /> 申请存储保护</button>}</div></details>
+    {preferenceSheet === 'candlestick' && <div className="action-sheet-backdrop" onClick={() => setPreferenceSheet(null)}><div className="action-sheet settings-preference-sheet" role="dialog" aria-modal="true" aria-label="选择涨跌颜色" onClick={event => event.stopPropagation()}><div className="settings-preference-sheet-header"><h2>涨跌颜色</h2></div><div className="surface-list">{[['red_up', '红涨绿跌', 'A 股与港股常用'] as const, ['green_up', '绿涨红跌', '美股常用'] as const].map(([value, label, description]) => <button key={value} type="button" className={`list-row settings-preference-option ${candlestickColorScheme === value ? 'selected' : ''}`} onClick={() => { setCandlestickColorScheme(value); setPreferenceSheet(null); }}><span className="list-row-main"><span className="list-row-title">{label}</span><small>{description}</small></span>{candlestickColorScheme === value && <Check size={18} />}</button>)}</div><button type="button" className="action-sheet-cancel" onClick={() => setPreferenceSheet(null)}>取消</button></div></div>}
+    {preferenceSheet === 'theme' && <div className="action-sheet-backdrop" onClick={() => setPreferenceSheet(null)}><div className="action-sheet settings-preference-sheet" role="dialog" aria-modal="true" aria-label="选择主题色" onClick={event => event.stopPropagation()}><div className="settings-preference-sheet-header"><h2>主题色</h2></div><div className="surface-list">{[['system', '跟随系统', '使用设备当前主题'] as const, ['light', '亮色', '始终使用亮色界面'] as const, ['dark', '暗色', '始终使用暗色界面'] as const].map(([value, label, description]) => <button key={value} type="button" className={`list-row settings-preference-option ${themePreference === value ? 'selected' : ''}`} onClick={() => { setThemePreference(value); setPreferenceSheet(null); }}><span className="list-row-main"><span className="list-row-title">{label}</span><small>{description}</small></span>{themePreference === value && <Check size={18} />}</button>)}</div><button type="button" className="action-sheet-cancel" onClick={() => setPreferenceSheet(null)}>取消</button></div></div>}
   </div>;
 }

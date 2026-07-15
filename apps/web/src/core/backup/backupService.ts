@@ -431,7 +431,9 @@ export class BackupService {
         message: `导入完成：新增 ${transactionCount} 笔，重复 ${duplicateCount} 笔，冲突 ${conflictCount} 笔。`,
       } as BackupImportRecord);
     });
-    const autoSync = (await db.appSettings.get('auto_sync_after_import'))?.value;
+    // Match the first-run default even if an import is triggered before the
+    // application shell has persisted its initial preferences.
+    const autoSync = (await db.appSettings.get('auto_sync_after_import'))?.value ?? true;
     if (autoSync) {
       await marketCacheManager.detectAndQueueMissingRanges();
       await MarketTaskExecutor.startOrWakeMarketExecutor();
