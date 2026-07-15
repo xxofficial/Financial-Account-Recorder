@@ -442,9 +442,10 @@ export function parseSchwabTransactionsCsv(rawText: string): BrokerTextParseResu
   const candidates: ParsedTradeCandidate[] = [];
   const taxes: Array<{ date: string; symbol: string; amount: number }> = [];
   let skipped = 0;
+  const skippedActions = new Set<string>();
   rows.forEach((row, index) => {
-    const [month, day, year] = (row[column('Date')] ?? '').split('/');
-    const tradeDate = month && day && year ? [year.padStart(4, '20'), month.padStart(2, '0'), day.padStart(2, '0')].join('-') : '';
+    const dateMatch = /^(\d{1,2})\/(\d{1,2})\/(\d{4})/.exec((row[column('Date')] ?? '').trim());
+    const tradeDate = dateMatch ? [dateMatch[3], dateMatch[1].padStart(2, '0'), dateMatch[2].padStart(2, '0')].join('-') : '';
     const action = (row[column('Action')] ?? '').trim();
     const symbol = (row[column('Symbol')] ?? 'CASH').trim().toUpperCase() || 'CASH';
     const name = (row[column('Description')] ?? symbol).trim() || symbol;
@@ -452,7 +453,7 @@ export function parseSchwabTransactionsCsv(rawText: string): BrokerTextParseResu
     const price = numberFromStatement(row[column('Price')] ?? '');
     const fee = Math.abs(numberFromStatement(row[column('Fees & Comm')] ?? '') ?? 0);
     const amount = numberFromStatement(row[column('Amount')] ?? '');
-    if (!tradeDate || !action) { skipped += 1; return; }
+    if (!tradeDate || !action) { skipped += 1; if (action) skippedActions.add(action); return; }
     const normalized = action.toUpperCase();
     if (normalized === 'NRA TAX ADJ') {
       const taxAmount = amount === null ? null : Math.abs(amount);
@@ -467,16 +468,21 @@ export function parseSchwabTransactionsCsv(rawText: string): BrokerTextParseResu
         : normalized === 'SELL' ? 'SELL'
           : /DIVIDEND/.test(normalized) ? 'DIVIDEND'
             : normalized === 'MARGIN INTEREST' ? 'INTEREST'
-              : normalized === 'DEPOSIT' ? 'DEPOSIT'
+              : normalized === 'WIRE RECEIVED' || normalized === 'DEPOSIT' ? 'DEPOSIT'
                 : normalized === 'WITHDRAWAL' ? 'WITHDRAW' : null;
-    if (!tradeType) { skipped += 1; return; }
+    const specialCashAction = normalized === 'CREDIT INTEREST' || normalized === 'ADR MGMT FEE' || normalized === 'FOREIGN TAX PAID';
+    if (!tradeType && !specialCashAction) { skipped += 1; skippedActions.add(action); return; }
+    const resolvedTradeType = normalized === 'FOREIGN TAX PAID' ? 'TAX' : specialCashAction ? 'OTHER' : tradeType as ImportedTradeType;
     const dividendTaxIndex = tradeType === 'DIVIDEND' ? taxes.findIndex((tax) => tax.date === tradeDate && tax.symbol === symbol) : -1;
     const tax = dividendTaxIndex >= 0 ? taxes.splice(dividendTaxIndex, 1)[0].amount : 0;
-    const isSecurity = tradeType === 'BUY' || tradeType === 'SELL';
-    const value = isSecurity ? Math.abs(price ?? (amount ?? 0) / (quantity || 1)) : Math.abs(amount ?? 0);
+    const isSecurity = resolvedTradeType === 'BUY' || resolvedTradeType === 'SELL';
+    const usesSignedAmount = resolvedTradeType === 'OTHER';
+    const value = isSecurity ? Math.abs(price ?? (amount ?? 0) / (quantity || 1)) : usesSignedAmount ? amount ?? 0 : Math.abs(amount ?? 0);
     if (!Number.isFinite(value) || value === 0) { skipped += 1; return; }
+    const isMarginInterest = resolvedTradeType === 'INTEREST';
     candidates.push(statementCandidate({
-      platform: 'SCHWAB', sourceChannel: 'CSV_TEXT', tradeType, market: 'US', symbol, name, currency: 'USD',
+      platform: 'SCHWAB', sourceChannel: 'CSV_TEXT', tradeType: resolvedTradeType, market: 'US',
+      symbol: isMarginInterest ? 'INTEREST' : symbol, name: isMarginInterest ? '融资利息' : name, currency: 'USD',
       tradeDate, tradeTime: '', price: value, quantity: isSecurity ? Math.abs(quantity) : 1, commission: fee, tax,
       rawText: row.join(','), ref: ['SWCSV', compactDate(tradeDate), normalized.replace(/\s+/g, '_'), symbol, String(index)].join('-'),
     }));
@@ -486,7 +492,7 @@ export function parseSchwabTransactionsCsv(rawText: string): BrokerTextParseResu
     tradeDate: tax.date, tradeTime: '', price: tax.amount, quantity: 1, commission: 0, tax: 0, rawText: 'NRA Tax Adj',
     ref: ['SWCSV', compactDate(tax.date), 'TAX', tax.symbol].join('-'),
   }));
-  const warnings = skipped ? ['已跳过 ' + skipped + ' 条嘉信 CSV 中暂不影响账本的记录（如 Journal）。'] : [];
+  const warnings = skipped ? ['已跳过 ' + skipped + ' 条嘉信 CSV 记录（' + [...skippedActions].join('、') + '）；Journal、Stock Split、Security Transfer 不会导入。'] : [];
   return { candidates: resolveImportedTradeTimes(candidates), warnings };
 }
 

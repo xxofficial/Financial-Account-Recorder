@@ -192,7 +192,7 @@ function RecordActionSheet({ close }: { close: () => void }) {
   const groups = [
     ['证券交易', [['BUY', '买入证券'], ['SELL', '卖出证券']]],
     ['资金操作', [['DEPOSIT', '入金'], ['WITHDRAW', '出金'], ['TRANSFER_OUT&paired=1', '平台间转仓'], ['FX_CONVERSION', '货币兑换']]],
-    ['公司行动与其他', [['DIVIDEND', '股息'], ['TAX', '税费'], ['INTEREST', '利息'], ['SPLIT', '拆股'], ['EXPIRE', '期权到期'], ['OTHER', '其他']]],
+    ['公司行动与其他', [['DIVIDEND', '股息'], ['TAX', '税费'], ['INTEREST', '融资利息'], ['SPLIT', '拆股'], ['EXPIRE', '期权到期'], ['OTHER', '其他']]],
   ];
   return <div className="action-sheet-backdrop" onClick={close}><div className="action-sheet" role="dialog" aria-modal="true" aria-label="记一笔" onClick={(event) => event.stopPropagation()}>
     <div className="action-sheet-scroll">

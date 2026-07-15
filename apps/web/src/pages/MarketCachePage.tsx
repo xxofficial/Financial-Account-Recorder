@@ -80,6 +80,7 @@ export default function MarketCachePage() {
   });
   const incompleteCoverage = coverage.filter((item) => item.coverageStatus !== 'complete');
   const pendingCoverageCount = incompleteCoverage.length + missingRequired.length;
+  const terminalFailures = workItems.filter((item) => ['failed_permanent', 'unsupported'].includes(item.status));
   const cacheHealth = requiredRanges.length > 0 && pendingCoverageCount > 0
     ? 'attention'
     : coverage.length === 0 && barsCount === 0
@@ -219,7 +220,7 @@ export default function MarketCachePage() {
               {cacheHealth === 'ready'
                 ? '当前没有待补齐的覆盖范围或同步任务。'
                 : cacheHealth === 'attention'
-                  ? `${pendingCoverageCount} 个标的待补齐，${pendingCount} 个任务在队列中。`
+                  ? `${pendingCoverageCount} 个标的待补齐，${pendingCount} 个任务在队列中。${terminalFailures.length ? `另有 ${terminalFailures.length} 个任务已停止重试。` : ''}`
                   : '可通过检测缺失区间或导入缓存备份开始建立数据。'}
             </span>
           </div>
@@ -239,6 +240,21 @@ export default function MarketCachePage() {
             ))}
             {incompleteCoverage.length > 6 && <p className="market-cache-more-hint">还有 {incompleteCoverage.length - 6} 个标的，请先检测缺失区间。</p>}
             {missingRequired.slice(0, 6).map((item) => <div className="market-cache-attention-row" key={`missing-${item.securityKey}`}><div><strong>{item.securityKey}</strong><span>{item.fromDate} ~ {item.toDate} · 尚未发现有效覆盖</span></div><span className="market-cache-status is-partial">待补齐</span></div>)}
+          </div>
+        )}
+        {terminalFailures.length > 0 && (
+          <div className="market-cache-attention-list" aria-label="已停止的同步任务">
+            {terminalFailures.slice(0, 6).map((item) => (
+              <div className="market-cache-attention-row" key={item.id}>
+                <div>
+                  <strong>{item.securityKey || item.symbol || item.id}</strong>
+                  <span>{item.requiredFromDate && item.requiredToDate ? `${item.requiredFromDate} ~ ${item.requiredToDate} · ` : ''}{item.lastError || '当前数据源不支持该请求'}</span>
+                </div>
+                <span className="market-cache-status is-unknown">{item.status === 'unsupported' ? '不支持' : '已停止'}</span>
+              </div>
+            ))}
+            {terminalFailures.length > 6 && <p className="market-cache-more-hint">还有 {terminalFailures.length - 6} 个已停止任务。</p>}
+            <p className="market-cache-more-hint">修复数据源或升级后，点击“检测缺失区间”即可重新加入同步队列。</p>
           </div>
         )}
       </section>

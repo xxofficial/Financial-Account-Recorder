@@ -213,6 +213,7 @@ export class MarketTaskExecutor {
                   status: attempt >= 5 ? 'failed_permanent' : 'retry_scheduled',
                   attemptCount: attempt,
                   nextRetryAt: nextRetry,
+                  lastError: execErr?.message || String(execErr),
                   updatedAt: Date.now()
                 });
               }
@@ -442,6 +443,7 @@ export class MarketTaskExecutor {
                 status: attempt >= 5 ? 'failed_permanent' : 'retry_scheduled',
                 attemptCount: attempt,
                 nextRetryAt: now + 30000,
+                lastError: '未返回该标的的行情数据',
                 updatedAt: now
               });
             }
@@ -460,6 +462,7 @@ export class MarketTaskExecutor {
                 status: isPerm ? 'failed_permanent' : errStatus,
                 attemptCount: attempt,
                 nextRetryAt: errStatus === 'retry_scheduled' ? now + Math.min(30 * 1000 * Math.pow(2, attempt), 2 * 60 * 60 * 1000) : undefined,
+                lastError: result.message || result.errorCode || result.status,
                 updatedAt: now
               });
             }
@@ -580,6 +583,7 @@ export class MarketTaskExecutor {
           for (const itemId of plan.workItemIds) {
             await db.marketWorkItems.update(itemId, {
               status: mappedBars.length > 0 ? 'success' : 'no_data',
+              lastError: undefined,
               updatedAt: now
             });
           }
@@ -597,6 +601,7 @@ export class MarketTaskExecutor {
                 status: isPerm ? 'failed_permanent' : errStatus,
                 attemptCount: attempt,
                 nextRetryAt: errStatus === 'retry_scheduled' ? now + Math.min(30 * 1000 * Math.pow(2, attempt), 2 * 60 * 60 * 1000) : undefined,
+                lastError: result.message || result.errorCode || result.status,
                 updatedAt: now
               });
             }

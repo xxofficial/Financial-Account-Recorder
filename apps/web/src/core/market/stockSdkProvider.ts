@@ -83,7 +83,10 @@ export class StockSdkProvider implements MarketDataProvider {
     const startedAt = Date.now();
     await this.started('history', symbol, market);
     try {
-      const options = { period: 'daily', start: startDate.replaceAll('-', ''), end: endDate.replaceAll('-', ''), adjust: '' } as any;
+      // stock-sdk only reads startDate/endDate.  Passing start/end silently
+      // falls back to its 1970–2050 default range, which is large enough for
+      // the upstream socket to drop the request.
+      const options = { period: 'daily', startDate: startDate.replaceAll('-', ''), endDate: endDate.replaceAll('-', ''), adjust: '' } as any;
       const sdk = this.sdk();
       const sourceSymbol = this.toSdkSymbol(symbol, normalizedMarket);
       const rows: any[] = normalizedMarket === 'A_SHARE'

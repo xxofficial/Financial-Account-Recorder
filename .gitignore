@@ -24,3 +24,4 @@ tools/market-fetcher/.venv/
 tools/market-fetcher/build/
 tools/market-fetcher/build.log
 apps/web/package-lock.json
+apps/web/dev-dist/

@@ -53,7 +53,7 @@ export const TradeTypeLabels: Record<TradeType, string> = {
   WITHDRAW: '出金',
   TRANSFER_OUT: '转出',
   TRANSFER_IN: '转入',
-  INTEREST: '利息',
+  INTEREST: '融资利息',
   SPLIT: '拆并股',
   EXPIRE: '期权到期',
   DIVIDEND: '分红',
@@ -71,8 +71,7 @@ export function isCashFlowPositive(type: TradeType): boolean {
     type === 'SELL' || 
     type === 'DEPOSIT' || 
     type === 'TRANSFER_IN' || 
-    type === 'DIVIDEND' || 
-    type === 'INTEREST' ||
+    type === 'DIVIDEND' ||
     type === 'OTHER'
   );
 }
@@ -162,10 +161,10 @@ export function mapTransactionToUiModel(txn: Transaction): TransactionUiModel {
   } else if (tradeType === 'SELL') {
     // 卖出：收入 = 股数 * 价格 - 佣金 - 印花税
     cashImpact = txn.quantity * txn.price - txn.commission - txn.tax;
-  } else if (tradeType === 'DEPOSIT' || tradeType === 'TRANSFER_IN' || tradeType === 'INTEREST' || tradeType === 'DIVIDEND') {
-    cashImpact = txn.price; // 存入、转入、分红、利息：价格项代表金额
-  } else if (tradeType === 'WITHDRAW' || tradeType === 'TRANSFER_OUT' || tradeType === 'TAX') {
-    cashImpact = -txn.price; // 提取、转出、单独税费：价格项代表金额
+  } else if (tradeType === 'DEPOSIT' || tradeType === 'TRANSFER_IN' || tradeType === 'DIVIDEND') {
+    cashImpact = txn.price; // 存入、转入、分红：价格项代表金额
+  } else if (tradeType === 'WITHDRAW' || tradeType === 'TRANSFER_OUT' || tradeType === 'INTEREST' || tradeType === 'TAX') {
+    cashImpact = -txn.price; // 提取、转出、融资利息、单独税费：价格项代表金额
   } else if (tradeType === 'OTHER') {
     cashImpact = txn.price; // 其他：正负由价格正负决定
   }

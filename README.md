@@ -89,6 +89,14 @@ npm run build
 npm run test:e2e
 ```
 
+发布 GitHub Pages（会运行本地检查、构建、提交并推送 `main`）：
+
+```powershell
+.\tools\deploy-pages.ps1
+```
+
+如只需提交并推送已确认的改动，可加 `-SkipChecks`；可用 `-Message '你的提交说明'` 自定义提交信息。
+
 ### Android
 
 先构建 Web 并同步到 Capacitor：

@@ -44,7 +44,7 @@ function cashLabel(type: TradeType, currency: CurrencyType) {
   const label = DisplayCurrency[currency].label;
   if (type === 'DEPOSIT') return `入金金额 (${label})`;
   if (type === 'WITHDRAW') return `出金金额 (${label})`;
-  if (type === 'INTEREST') return `利息金额 (${label})`;
+  if (type === 'INTEREST') return `融资利息金额 (${label})`;
   if (type === 'TAX') return `税费金额 (${label})`;
   if (type === 'DIVIDEND') return `分红金额 (${label})`;
   if (type === 'TRANSFER_IN') return `转入金额 (${label})`;

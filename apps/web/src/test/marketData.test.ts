@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { AndroidDefaultMarketProvider } from '../core/market/androidDefaultMarketProvider';
 import { HistoricalRequestPlanner, INITIAL_CAPABILITIES } from '../core/market/HistoricalRequestPlanner';
 import { MarketDataAppProvider, marketDataExclusiveEndDate } from '../core/market/marketDataProvider';
@@ -18,6 +18,23 @@ describe('stock-sdk stock routing', () => {
     expect(provider.toBar({ date: '2026-06-30', open: 1, high: 1, low: 1, close: 1 }, '600519', 'A_SHARE', '2026-07-01', '2026-07-02')).toBeNull();
     expect(provider.toBar({ date: '2026-07-01', open: 10, high: 9, low: 8, close: 10 }, '600519', 'A_SHARE', '2026-07-01', '2026-07-02')).toBeNull();
     expect(provider.toBar({ date: '2026-07-01', open: 10, high: 12, low: 9, close: 11, volume: 1 }, '600519', 'A_SHARE', '2026-07-01', '2026-07-02')).toMatchObject({ adjustmentMode: 'raw', close: 11 });
+  });
+
+  it('passes compact startDate and endDate to the stock-sdk history endpoint', async () => {
+    const provider = new StockSdkProvider() as any;
+    const us = vi.fn().mockResolvedValue([]);
+    provider.sdk = () => ({ kline: { us } });
+    provider.started = vi.fn().mockResolvedValue(undefined);
+    provider.failed = vi.fn().mockReturnValue({ ok: false, status: 'empty_data', provider: 'stock-sdk' });
+
+    await provider.fetchHistoricalBars('AMD', 'US', 'STOCK', '2026-01-02', '2026-07-15', '');
+
+    expect(us).toHaveBeenCalledWith(expect.any(String), {
+      period: 'daily',
+      startDate: '20260102',
+      endDate: '20260715',
+      adjust: '',
+    });
   });
 
   it('plans keyless stock-sdk work without allowing option work', () => {

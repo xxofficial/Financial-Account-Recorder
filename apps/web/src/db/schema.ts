@@ -328,6 +328,7 @@ export interface MarketWorkItem {
   attemptCount: number;
   lastAttemptAt?: number;
   nextRetryAt?: number;
+  lastError?: string;
   providerTried?: string[];
   preferredProviderId?: string;
   createdAt: number;
