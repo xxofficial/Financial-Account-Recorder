@@ -32,14 +32,6 @@ import {
   type NativeInboxPreview,
 } from '../core/imports/nativeInboxService';
 
-// The browser automation surface cannot populate native file choosers.  Keep
-// this fixture loader development-only so the statement is never bundled into
-// the deployed Pages application.
-const loadLocalSchwabCsvFixture = import.meta.env.DEV
-  ? () => import('../../../../samples/Statements/Schwab/Individual_XXX398_Transactions_20260704-041450.csv?raw')
-  : undefined;
-const localSchwabCsvFixtureName = 'Individual_XXX398_Transactions_20260704-041450.csv';
-
 export default function ImportExportPage() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -151,23 +143,6 @@ export default function ImportExportPage() {
     if (!file) return;
     setStatementFile(file);
     void previewStatementFile(file, statementPassword);
-  };
-
-  const handleLoadLocalSchwabCsvFixture = async () => {
-    if (!loadLocalSchwabCsvFixture) return;
-    setStatementBusy(true);
-    setStatementMessage('');
-    try {
-      const { default: csv } = await loadLocalSchwabCsvFixture();
-      const file = new File([csv], localSchwabCsvFixtureName, { type: 'text/csv' });
-      setStatementFile(file);
-      await previewStatementFile(file, statementPassword);
-    } catch (error) {
-      setStatementCandidates([]);
-      setStatementWarnings([`加载本地嘉信测试 CSV 失败：${error instanceof Error ? error.message : String(error)}`]);
-    } finally {
-      setStatementBusy(false);
-    }
   };
 
   const handleImportStatement = async () => {
@@ -343,16 +318,6 @@ export default function ImportExportPage() {
           </span>
           <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf,text/csv,.csv" onChange={handleStatementFileChange} disabled={statementBusy} />
         </label>
-        {loadLocalSchwabCsvFixture && (
-          <button
-            type="button"
-            data-testid="load-local-schwab-csv"
-            disabled={statementBusy}
-            onClick={() => void handleLoadLocalSchwabCsvFixture()}
-          >
-            导入内置嘉信测试 CSV（仅本地开发）
-          </button>
-        )}
         {statementBusy && <div className="text-xs text-muted">正在提取并解析结单…</div>}
         {statementWarnings.length > 0 && <div className="text-xs" style={{ color: 'var(--color-warning)' }}>{statementWarnings.join(' ')}</div>}
         {statementMessage && <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{statementMessage}</div>}

@@ -1,12 +1,15 @@
 import { expect, test } from 'playwright/test';
+import { existsSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+const schwabCsvFixture = resolve(process.cwd(), '../../samples/Statements/Schwab/Individual_XXX398_Transactions_20260704-041450.csv');
 
 test('local Schwab CSV fixture completes the visible import and sync workflow', async ({ page }) => {
   test.setTimeout(240_000);
+  test.skip(!existsSync(schwabCsvFixture), 'Local statement samples are intentionally excluded from Git.');
 
   await page.goto('/#/data/imports');
-  const loadFixture = page.getByTestId('load-local-schwab-csv');
-  await expect(loadFixture).toHaveCount(1);
-  await loadFixture.click();
+  await page.getByLabel('选择 PDF 结单').setInputFiles(schwabCsvFixture);
 
   const confirmImport = page.getByTestId('confirm-statement-import');
   await expect(confirmImport).toBeVisible();
