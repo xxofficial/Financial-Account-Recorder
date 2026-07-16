@@ -47,7 +47,7 @@ export class MarketDataAppProvider implements MarketDataProvider {
 
   supportsAssetType(assetType: 'STOCK' | 'OPTION'): boolean {
     const at = (assetType || '').toUpperCase();
-    return at === 'OPTION';
+    return at === 'STOCK' || at === 'OPTION';
   }
 
   supportsMarket(market: string): boolean {
@@ -386,7 +386,7 @@ export class MarketDataAppProvider implements MarketDataProvider {
     );
   }
 
-  async searchSecurity(symbol: string, market: string, apiKey: string): Promise<MarketDataResult<MarketProviderSecurityInfo | null>> {
+  async searchSecurity(_symbol: string, market: string, apiKey: string): Promise<MarketDataResult<MarketProviderSecurityInfo | null>> {
     if (!apiKey || apiKey.trim() === '') {
       return { ok: false, status: 'provider_unconfigured', provider: this.name, message: '行情源 API Key 未配置' };
     }
@@ -394,37 +394,9 @@ export class MarketDataAppProvider implements MarketDataProvider {
       return { ok: true, status: 'skipped', provider: this.name, data: null };
     }
 
+    // MarketData.app's browser-accessible historical endpoint does not expose
+    // a verified company-name field, so it must not overwrite stock-sdk's
+    // canonical name with a ticker placeholder.
     return { ok: true, status: 'skipped', provider: this.name, data: null };
-    const url = `https://api.marketdata.app/v1/stocks/quotes/${symbol}/`;
-    return requestWithLogging<MarketProviderSecurityInfo | null>(
-      this.name,
-      'search',
-      symbol,
-      market,
-      'STOCK',
-      url,
-      8000,
-      async (signal) => {
-        const res = await marketFetch(url, {
-          headers: {
-            'Authorization': `Bearer ${apiKey}`
-          },
-          signal
-        });
-        return {
-          response: res,
-          parseData: async (resp) => {
-            const json = await resp.json();
-            if (json.s !== 'ok') return null;
-            return {
-              symbol,
-              market,
-              name: symbol,
-              assetType: 'STOCK'
-            };
-          }
-        };
-      }
-    );
   }
 }

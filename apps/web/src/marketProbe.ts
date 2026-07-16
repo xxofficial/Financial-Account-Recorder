@@ -129,7 +129,9 @@ function classifyError(error: unknown): { status: MarketProbeStatus; message: st
   if (message.startsWith('invalid_ohlc')) return { status: 'invalid_ohlc', message };
   if (message.startsWith('date_out_of_range')) return { status: 'date_missing', message };
   if (lower.includes('parse') || lower.includes('json')) return { status: 'parse_error', message };
-  if (lower.includes('cors') || lower.includes('failed to fetch')) return { status: 'cors_error', message };
+  // Browsers intentionally hide the cause of a failed fetch.  Treat it as a
+  // transient network failure unless the runtime explicitly names CORS.
+  if (lower.includes('cors')) return { status: 'cors_error', message };
   return { status: 'network_error', message };
 }
 

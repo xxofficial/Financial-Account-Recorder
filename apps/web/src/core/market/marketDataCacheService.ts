@@ -18,6 +18,12 @@ export interface SecuritySuggestion {
   assetType: 'STOCK';
 }
 
+export interface SecurityNameRepairResult {
+  resolvedSecurities: number;
+  updatedTransactions: number;
+  unresolvedSecurities: number;
+}
+
 function suggestionKey(item: Pick<SecuritySuggestion, 'market' | 'symbol'>): string {
   return `${item.market.toUpperCase()}:${item.symbol.trim().toUpperCase()}`;
 }
@@ -292,58 +298,42 @@ export class MarketDataCacheService {
     }));
   }
 
-  /**
-   * Resolve security name by checking local database first, then fallback to APIs
-   */
-  async resolveSecurityName(symbol: string, market: string): Promise<string | null> {
+  /** Retrieves the canonical name from the configured market-source priority. */
+  private async resolveOfficialSecurityName(symbol: string, market: string): Promise<string | null> {
     const cleanSymbol = symbol.trim().toUpperCase();
-    if (!cleanSymbol) return null;
+    const cleanMarket = market.trim().toUpperCase();
+    if (!cleanSymbol || !cleanMarket || cleanMarket === 'CASH' || cleanSymbol === 'CASH' || cleanSymbol === 'INTEREST') return null;
 
-    // 1. Check local quoteSnapshots
-    const cachedQuote = await db.quoteSnapshots.get(`${market}:${cleanSymbol}`);
-    if (cachedQuote && cachedQuote.name && cachedQuote.name !== cleanSymbol) {
-      return cachedQuote.name;
-    }
-
-    // 2. Check existing transactions for this symbol
-    const tx = await db.transactions
-      .where('[market+symbol]')
-      .equals([market, cleanSymbol])
-      .first();
-    if (tx && tx.name && tx.name !== cleanSymbol) {
-      return tx.name;
-    }
-
-    // 3. Fallback to querying active providers
     const activeList = await this.getActiveProviders();
     for (const { provider, apiKey } of activeList) {
-      if (!provider.supportsAssetType('STOCK') || !provider.supportsMarket(market)) {
+      if (!provider.supportsAssetType('STOCK') || !provider.supportsMarket(cleanMarket)) {
         continue;
       }
 
       try {
         console.log(`Resolving name for ${cleanSymbol} via ${provider.name}...`);
-        const result = await provider.searchSecurity(cleanSymbol, market, apiKey);
-        if (result.ok && result.data && result.data.name) {
+        const result = await provider.searchSecurity(cleanSymbol, cleanMarket, apiKey);
+        const name = result.data?.name?.trim();
+        if (result.ok && result.data && name && name.toUpperCase() !== cleanSymbol) {
           const info = result.data;
-          
-          await db.quoteSnapshots.put({
-            id: `${market}:${cleanSymbol}`,
+          const existing = await db.quoteSnapshots.get(`${cleanMarket}:${cleanSymbol}`);
+          if (existing) await db.quoteSnapshots.update(existing.id, { name });
+          else await db.quoteSnapshots.put({
+            id: `${cleanMarket}:${cleanSymbol}`,
             symbol: cleanSymbol,
-            market,
-            name: info.name,
+            market: cleanMarket,
+            name,
             assetType: info.assetType,
             currentPrice: null,
             previousClose: null,
             change: null,
             changePercent: null,
-            currency: market === 'US' ? 'USD' : market === 'HK' ? 'HKD' : 'CNY',
+            currency: cleanMarket === 'US' ? 'USD' : cleanMarket === 'HK' ? 'HKD' : 'CNY',
             provider: provider.name,
             fetchedAt: Date.now(),
-            requestStatus: 'success'
-          } as any);
-
-          return info.name;
+            requestStatus: 'success',
+          });
+          return name;
         }
       } catch (e) {
         console.error(`Provider ${provider.name} failed during searchSecurity:`, e);
@@ -351,6 +341,59 @@ export class MarketDataCacheService {
     }
 
     return null;
+  }
+
+  /**
+   * Returns a market-source name when available, with local data only as an
+   * offline fallback. New entries therefore share the same source-led name as
+   * existing records for that market and code.
+   */
+  async resolveSecurityName(symbol: string, market: string): Promise<string | null> {
+    const cleanSymbol = symbol.trim().toUpperCase();
+    const cleanMarket = market.trim().toUpperCase();
+    const officialName = await this.resolveOfficialSecurityName(cleanSymbol, cleanMarket);
+    if (officialName) return officialName;
+    const cachedQuote = await db.quoteSnapshots.get(`${cleanMarket}:${cleanSymbol}`);
+    if (cachedQuote?.name?.trim() && cachedQuote.name.trim().toUpperCase() !== cleanSymbol) return cachedQuote.name;
+    const transaction = await db.transactions.where('[market+symbol]').equals([cleanMarket, cleanSymbol]).first();
+    return transaction?.name?.trim() && transaction.name.trim().toUpperCase() !== cleanSymbol ? transaction.name : null;
+  }
+
+  /**
+   * Android parity: retrieve each security's name from the market source, then
+   * write it back to every matching non-option transaction across platforms.
+   */
+  async repairSecurityNames(targets?: Array<{ symbol: string; market: string }>): Promise<SecurityNameRepairResult> {
+    const allTargets = targets ?? (await db.transactions.toArray()).map((transaction) => ({ symbol: transaction.symbol, market: transaction.market }));
+    const uniqueTargets = new Map<string, { symbol: string; market: string }>();
+    for (const target of allTargets) {
+      const symbol = target.symbol.trim().toUpperCase();
+      const market = target.market.trim().toUpperCase();
+      if (!symbol || !market || market === 'CASH' || symbol === 'CASH' || symbol === 'INTEREST') continue;
+      uniqueTargets.set(`${market}:${symbol}`, { symbol, market });
+    }
+
+    let resolvedSecurities = 0;
+    let updatedTransactions = 0;
+    let unresolvedSecurities = 0;
+    for (const { symbol, market } of uniqueTargets.values()) {
+      const name = await this.resolveOfficialSecurityName(symbol, market);
+      if (!name) {
+        unresolvedSecurities += 1;
+        continue;
+      }
+      resolvedSecurities += 1;
+      const matchingTransactions = await db.transactions.where('[market+symbol]').equals([market, symbol]).toArray();
+      const now = Date.now();
+      await db.transaction('rw', db.transactions, async () => {
+        for (const transaction of matchingTransactions) {
+          if (transaction.assetType === 'OPTION' || transaction.name === name) continue;
+          await db.transactions.update(transaction.id!, { name, updatedAt: now });
+          updatedTransactions += 1;
+        }
+      });
+    }
+    return { resolvedSecurities, updatedTransactions, unresolvedSecurities };
   }
 
   /**

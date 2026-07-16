@@ -114,7 +114,16 @@ export class StockSdkProvider implements MarketDataProvider {
     try {
       const result: any[] = await this.sdk().search(symbol);
       const matched = result.find(item => this.sameSymbol(item?.code, symbol, market.toUpperCase() as any));
-      const data = matched ? { symbol, market, name: matched.name || symbol, assetType: 'STOCK' as const } : null;
+      if (matched?.name) {
+        return { ok: true, status: 'success', provider: this.name, data: { symbol, market, name: matched.name, assetType: 'STOCK' as const }, durationMs: Date.now() - startedAt };
+      }
+
+      // stock-sdk's text search is incomplete for some US tickers (for
+      // example NVO), while its exact quote endpoint still supplies the
+      // canonical security name. Use the same market source as a fallback.
+      const quoteResult = await this.fetchQuotes([{ symbol, market, assetType: 'STOCK' }], _apiKey);
+      const quote = quoteResult.data?.[0];
+      const data = quote?.name ? { symbol, market, name: quote.name, assetType: 'STOCK' as const } : null;
       return { ok: true, status: 'success', provider: this.name, data, durationMs: Date.now() - startedAt };
     } catch (error) {
       return this.fromError(error, startedAt);
@@ -154,17 +163,24 @@ export class StockSdkProvider implements MarketDataProvider {
   }
 
   private sameSymbol(value: unknown, symbol: string, market: 'A_SHARE' | 'HK' | 'US'): boolean {
-    const actual = String(value || '').replace(/^(sh|sz|bj)/i, '').replace(/\.HK$/i, '').replace(/\.US$/i, '').toUpperCase();
-    const expected = this.toSdkSymbol(symbol, market).replace(/^(sh|sz|bj)/i, '').replace(/^0+/, '').toUpperCase();
+    const actual = this.comparableSymbol(String(value || ''), market);
+    const expected = this.comparableSymbol(this.toSdkSymbol(symbol, market), market);
     return market === 'HK' ? actual.replace(/^0+/, '') === expected.replace(/^0+/, '') : actual === expected;
   }
 
   private searchResultSymbol(row: any, market: 'A_SHARE' | 'HK' | 'US'): string {
     const raw = String(row?.code || row?.symbol || row?.ticker || '').trim();
     if (!raw) return '';
-    if (market === 'A_SHARE') return raw.replace(/^(sh|sz|bj)/i, '').replace(/\.(SH|SZ|BJ)$/i, '');
-    if (market === 'HK') return raw.replace(/\.HK$/i, '').replace(/^0+/, '').padStart(5, '0');
-    return raw.replace(/\.US$/i, '').toUpperCase();
+    const normalized = this.comparableSymbol(raw, market);
+    return market === 'HK' ? normalized.replace(/^0+/, '').padStart(5, '0') : normalized;
+  }
+
+  /** Tencent/stock-sdk US codes carry both a `us` prefix and exchange suffix (`NVO.N`). */
+  private comparableSymbol(value: string, market: 'A_SHARE' | 'HK' | 'US'): string {
+    const raw = value.trim();
+    if (market === 'A_SHARE') return raw.replace(/^(sh|sz|bj)/i, '').replace(/\.(SH|SZ|BJ)$/i, '').toUpperCase();
+    if (market === 'HK') return raw.replace(/\.HK$/i, '').toUpperCase();
+    return raw.replace(/^us/i, '').replace(/\.(?:US|N|O|A|P|AM|PS)$/i, '').toUpperCase();
   }
 
   private matchesSearchMarket(row: any, symbol: string, market: 'A_SHARE' | 'HK' | 'US'): boolean {
@@ -203,5 +219,13 @@ export class StockSdkProvider implements MarketDataProvider {
   private async started(type: string, symbol: string, market: string): Promise<void> { await logMarketRequest({ providerId: this.name, type: 'request_start', message: `[stock-sdk] 发起 ${type} 请求 (${symbol}, ${market})`, detail: { transport: 'marketFetch' } }); }
   private async succeeded(type: string, count: number, startedAt: number, detail: Record<string, unknown> = {}): Promise<void> { await logMarketRequest({ providerId: this.name, type: 'request_success', message: `[stock-sdk] ${type} 请求成功，${count} 条有效数据`, detail: { durationMs: Date.now() - startedAt, ...detail } }); }
   private async failed(code: string, message: string, startedAt: number): Promise<MarketDataResult<any>> { await logMarketRequest({ providerId: this.name, type: 'request_failed', message: `[stock-sdk] 请求失败 - ${message}`, detail: { errorCode: code, durationMs: Date.now() - startedAt } }); return { ok: false, status: 'failed', provider: this.name, message, errorCode: code, durationMs: Date.now() - startedAt }; }
-  private async fromError(error: unknown, startedAt: number): Promise<MarketDataResult<any>> { const message = error instanceof Error ? error.message : String(error); const cors = /failed to fetch|cors/i.test(message); return this.failed(cors ? 'CORS_OR_NETWORK_ERROR' : 'SDK_REQUEST_ERROR', cors ? '请求受到 CORS 限制或行情服务器不可达。' : `stock-sdk 请求异常: ${message}`, startedAt).then(result => ({ ...result, status: cors ? 'cors_error' : 'network_error' })); }
+  private async fromError(error: unknown, startedAt: number): Promise<MarketDataResult<any>> {
+    const message = error instanceof Error ? error.message : String(error);
+    const cors = /\bcors\b/i.test(message);
+    return this.failed(
+      cors ? 'CORS_ERROR' : 'NETWORK_UNREACHABLE',
+      cors ? '请求受到浏览器跨域限制。' : `stock-sdk 请求未能建立连接，将自动重试：${message}`,
+      startedAt,
+    ).then(result => ({ ...result, status: cors ? 'cors_error' : 'network_error' }));
+  }
 }

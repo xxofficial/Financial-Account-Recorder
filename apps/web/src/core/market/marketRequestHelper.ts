@@ -164,15 +164,19 @@ export async function requestWithLogging<T>(
       finalStatus = 'timeout';
       message = `行情请求超时（限制 ${timeoutMs / 1000} 秒），已被系统中止。`;
       errorCode = 'TIMEOUT';
+    } else if (err.message && err.message.toLowerCase().includes('cors')) {
+      finalStatus = 'cors_error';
+      message = '请求受到浏览器跨域限制。';
+      errorCode = 'CORS_ERROR';
     } else if (err.message && err.message.toLowerCase().includes('failed to fetch')) {
       if (navigator.onLine === false) {
         finalStatus = 'network_error';
         message = '网络已断开，请检查您的网络连接。';
         errorCode = 'NETWORK_DISCONNECTED';
       } else {
-        finalStatus = 'cors_error';
-        message = '请求发生跨域 (CORS) 限制或目标行情服务器不可达。';
-        errorCode = 'CORS_OR_NETWORK_ERROR';
+        finalStatus = 'network_error';
+        message = '请求未能建立连接，可能是上游暂时不可达；将自动重试。';
+        errorCode = 'NETWORK_UNREACHABLE';
       }
     } else {
       finalStatus = 'network_error';

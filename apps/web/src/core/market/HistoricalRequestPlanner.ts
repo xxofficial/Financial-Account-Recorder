@@ -72,13 +72,16 @@ export const INITIAL_CAPABILITIES: ProviderCapability[] = [
   },
   {
     providerId: 'marketdata',
-    supportsRealtimeQuotes: true,
+    // MarketData.app is used as the browser's historical-data fallback.  Keep
+    // realtime quotes on stock-sdk; the MarketData quote implementation is
+    // option-specific and should not receive stock refresh work.
+    supportsRealtimeQuotes: false,
     supportsHistorical: true,
     supportsSymbolRange: true,
     supportsMultiSymbolSameRange: false,
     supportsMultiSymbolSameDate: true,
     supportsRecentLimit: true,
-    supportsAssetTypes: ['option'],
+    supportsAssetTypes: ['stock', 'option'],
     supportsMarkets: ['US'],
     maxSymbolsPerRequest: 1,
     costModel: 'provider_specific',
@@ -87,6 +90,24 @@ export const INITIAL_CAPABILITIES: ProviderCapability[] = [
 ];
 
 export class HistoricalRequestPlanner {
+  /** Whether a work item still has an enabled, configured provider that has not been tried. */
+  static hasConfiguredProvider(
+    item: MarketWorkItem,
+    providerConfigs: MarketProviderConfig[],
+    providerCapabilities: ProviderCapability[],
+  ): boolean {
+    return providerConfigs.some((config) => {
+      const configured = config.enabled === 1 &&
+        (config.apiKey.trim() !== '' || config.provider === 'android-default' || config.provider === 'stock-sdk');
+      const capability = providerCapabilities.find((cap) => cap.providerId === config.provider);
+      // This must use the same availability rule as request planning.  In
+      // particular, a provider that has already been tried is not a fallback
+      // source.  Treating it as one leaves the work item pending forever when
+      // every plan has been exhausted.
+      return configured && capability !== undefined && this.isSupported(capability, item);
+    });
+  }
+
   /**
    * Build all executable request plans for pending items
    */
@@ -274,6 +295,9 @@ export class HistoricalRequestPlanner {
    * Helper to check if a provider capability supports a specific work item's market and asset type
    */
   private static isSupported(cap: ProviderCapability, item: MarketWorkItem): boolean {
+    if (item.preferredProviderId && item.preferredProviderId !== cap.providerId) return false;
+    if (item.providerTried?.includes(cap.providerId)) return false;
+
     const market = item.market || '';
     const assetType = (item.assetType || '').toLowerCase();
     

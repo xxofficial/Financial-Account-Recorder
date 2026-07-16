@@ -36,6 +36,7 @@ export default function MarketCachePage() {
   const workItems = useLiveQuery(async () => {
     return db.marketWorkItems.toArray();
   }) ?? [];
+  const executorState = useLiveQuery(() => db.marketExecutorState.get('global'));
 
   const canonicalBars = useLiveQuery(() => db.historicalBars.where('resolution').equals('1d').toArray()) ?? [];
   const barsCount = useLiveQuery(async () => {
@@ -58,6 +59,7 @@ export default function MarketCachePage() {
       running: 0,
       retry_scheduled: 0,
       paused_quota: 0,
+      paused_provider_error: 0,
       success: 0,
       failed: 0,
       no_data: 0,
@@ -72,15 +74,40 @@ export default function MarketCachePage() {
     return stats;
   })();
 
-  const pendingCount = queueStats.pending + queueStats.running + queueStats.retry_scheduled + queueStats.paused_quota;
+  const pendingCount = queueStats.pending + queueStats.running + queueStats.retry_scheduled + queueStats.paused_quota + queueStats.paused_provider_error;
+  const isTerminallyUnsupported = (securityKey: string, fromDate: string, toDate: string) => workItems.some((item) => (
+    item.status === 'unsupported' &&
+    item.securityKey === securityKey &&
+    item.requiredFromDate !== undefined &&
+    item.requiredToDate !== undefined &&
+    item.requiredFromDate <= fromDate &&
+    item.requiredToDate >= toDate
+  ));
   const missingRequired = requiredRanges.filter((required) => {
     const covered = coverage.some((item) => item.securityKey === required.securityKey && item.coverageStatus === 'complete' && item.fromDate <= required.fromDate && item.toDate >= required.toDate);
     const hasBars = canonicalBars.some((bar) => bar.securityKey === required.securityKey && bar.tradeDate >= required.fromDate && bar.tradeDate <= required.toDate);
-    return !covered || !hasBars;
+    return (!covered || !hasBars) && !isTerminallyUnsupported(required.securityKey, required.fromDate, required.toDate);
   });
-  const incompleteCoverage = coverage.filter((item) => item.coverageStatus !== 'complete');
+  const incompleteCoverage = coverage.filter((item) => item.coverageStatus !== 'complete' && !isTerminallyUnsupported(item.securityKey, item.fromDate, item.toDate));
   const pendingCoverageCount = incompleteCoverage.length + missingRequired.length;
-  const terminalFailures = workItems.filter((item) => ['failed_permanent', 'unsupported'].includes(item.status));
+  const isReplacedByActiveWork = (terminalItem: typeof workItems[number]) => workItems.some((item) => (
+    item.id !== terminalItem.id &&
+    item.kind === terminalItem.kind &&
+    item.securityKey === terminalItem.securityKey &&
+    ['pending', 'running', 'retry_scheduled', 'paused_quota', 'paused_provider_error'].includes(item.status) &&
+    (item.requiredFromDate ?? '') <= (terminalItem.requiredToDate ?? '') &&
+    (item.requiredToDate ?? '') >= (terminalItem.requiredFromDate ?? '')
+  ));
+  const terminalFailures = workItems.filter((item) => (
+    ['failed_permanent', 'unsupported'].includes(item.status) &&
+    !isReplacedByActiveWork(item) &&
+    missingRequired.some((required) =>
+      item.securityKey === required.securityKey &&
+      (item.requiredFromDate ?? '') <= required.toDate &&
+      (item.requiredToDate ?? '') >= required.fromDate
+    )
+  ));
+  const unsupportedCount = terminalFailures.filter((item) => item.status === 'unsupported').length;
   const cacheHealth = requiredRanges.length > 0 && pendingCoverageCount > 0
     ? 'attention'
     : coverage.length === 0 && barsCount === 0
@@ -196,7 +223,7 @@ export default function MarketCachePage() {
           <div><span>缓存 K 线数</span><strong>{barsCount.toLocaleString()}</strong></div>
           <div><span>已覆盖标的</span><strong>{coverage.length}</strong></div>
           <div><span>待补齐标的</span><strong className={pendingCoverageCount > 0 ? 'is-warning' : ''}>{pendingCoverageCount}</strong></div>
-          <div><span>同步任务</span><strong className={pendingCount > 0 ? 'is-warning' : 'is-success'}>{pendingCount}</strong></div>
+          <div><span>同步任务</span><strong data-testid="market-sync-pending-count" className={pendingCount > 0 ? 'is-warning' : 'is-success'}>{pendingCount}</strong></div>
         </div>
       </section>
 
@@ -218,9 +245,11 @@ export default function MarketCachePage() {
             </strong>
             <span>
               {cacheHealth === 'ready'
-                ? '当前没有待补齐的覆盖范围或同步任务。'
+                ? unsupportedCount
+                  ? `所有可同步区间均已完成；另有 ${unsupportedCount} 个标的当前暂不支持。`
+                  : '当前没有待补齐的覆盖范围或同步任务。'
                 : cacheHealth === 'attention'
-                  ? `${pendingCoverageCount} 个标的待补齐，${pendingCount} 个任务在队列中。${terminalFailures.length ? `另有 ${terminalFailures.length} 个任务已停止重试。` : ''}`
+                  ? `${pendingCoverageCount} 个标的待补齐，${pendingCount} 个任务在队列中。${unsupportedCount ? `另有 ${unsupportedCount} 个标的当前暂不支持。` : terminalFailures.length ? `另有 ${terminalFailures.length} 个任务已停止重试。` : ''}`
                   : '可通过检测缺失区间或导入缓存备份开始建立数据。'}
             </span>
           </div>
@@ -250,11 +279,11 @@ export default function MarketCachePage() {
                   <strong>{item.securityKey || item.symbol || item.id}</strong>
                   <span>{item.requiredFromDate && item.requiredToDate ? `${item.requiredFromDate} ~ ${item.requiredToDate} · ` : ''}{item.lastError || '当前数据源不支持该请求'}</span>
                 </div>
-                <span className="market-cache-status is-unknown">{item.status === 'unsupported' ? '不支持' : '已停止'}</span>
+                <span className="market-cache-status is-unknown">{item.status === 'unsupported' ? '暂不支持' : '已停止'}</span>
               </div>
             ))}
             {terminalFailures.length > 6 && <p className="market-cache-more-hint">还有 {terminalFailures.length - 6} 个已停止任务。</p>}
-            <p className="market-cache-more-hint">修复数据源或升级后，点击“检测缺失区间”即可重新加入同步队列。</p>
+            <p className="market-cache-more-hint">“暂不支持”表示当前所有已配置数据源都无法提供该区间；可在更换数据源或导入缓存后重新检测。</p>
           </div>
         )}
       </section>
@@ -274,18 +303,27 @@ export default function MarketCachePage() {
           </button>
           <button className="success" onClick={handleStartSync} disabled={isSyncing || pendingCount === 0}>
             {isSyncing ? <RefreshCw size={16} className="spin" /> : <RefreshCw size={16} />}
-            {isSyncing ? '同步中…' : '开始同步'}
+            {isSyncing ? '同步中…' : '立即同步'}
           </button>
         </div>
         {detectSummary && (
           <div className="market-cache-inline-status is-info">
-            <strong>检测到 {detectSummary.queued} 个缺失区间</strong>
+            <strong>
+              {detectSummary.queued > 0
+                ? `本次检测到 ${detectSummary.queued} 个缺失区间；${pendingCoverageCount > 0 ? `当前仍有 ${pendingCoverageCount} 个标的待补齐、${pendingCount} 个任务在队列中。` : '当前均已处理完成。'}`
+                : '本次未发现新的缺失区间。'}
+            </strong>
             {detectSummary.items.length > 0 && (
               <div className="market-cache-result-list">
                 {detectSummary.items.slice(0, 6).map((item, i) => <span key={i}>{item.securityKey}：{item.fromDate} ~ {item.toDate}</span>)}
                 {detectSummary.items.length > 6 && <span>还有 {detectSummary.items.length - 6} 个区间</span>}
               </div>
             )}
+          </div>
+        )}
+        {executorState?.currentMessage && executorState.currentMessage !== '空闲' && (
+          <div className="market-cache-inline-status is-info" aria-live="polite">
+            <strong>同步状态：</strong><span>{executorState.currentMessage}</span>
           </div>
         )}
         <button className="market-cache-text-action" onClick={handleExportMissing}>

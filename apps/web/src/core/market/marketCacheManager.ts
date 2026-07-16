@@ -11,7 +11,7 @@ import { HistoricalGapAnalyzer } from './HistoricalGapAnalyzer';
 import { upsertMarketWorkItems } from './marketQueueManager';
 import { MarketTaskExecutor } from './MarketTaskExecutor';
 import { PortfolioCalculator } from '../portfolio/portfolioCalculator';
-import { resolveLatestExpectedDailyCloseDate } from './marketDataCacheService';
+import { latestExpectedDailyCloseDate } from './marketDataCacheService';
 
 export interface ImportMarketCacheOptions {
   overwrite?: boolean;
@@ -109,7 +109,11 @@ export async function getHistoricalRangeRequestsFromTransactions(
   for (const [key, info] of groups) {
     const dates = Array.from(info.dates).sort();
     if (dates.length === 0) continue;
-    const latestCloseDate = await resolveLatestExpectedDailyCloseDate(info.market, referenceAt);
+    // Detecting missing ranges must be immediately usable even when the
+    // optional exchange-calendar refresh is offline.  It uses the same
+    // market-local weekday fallback as Android's initial request planning;
+    // provider-confirmed coverage still handles holidays after data arrives.
+    const latestCloseDate = latestExpectedDailyCloseDate(info.market, referenceAt);
     requests.push({
       securityKey: key,
       symbol: info.symbol,
@@ -412,6 +416,10 @@ export class MarketCacheManager {
       'retry_scheduled',
       'paused_quota',
       'paused_provider_error',
+      // Keep terminally unsupported ranges in the export.  They are still
+      // genuinely missing and can be completed later by the Yahoo Worker or
+      // an imported cache file.
+      'unsupported',
     ];
 
     const items = await db.marketWorkItems
@@ -499,6 +507,7 @@ export class MarketCacheManager {
 
     const newItems: MarketWorkItem[] = [];
     const result: { securityKey: string; fromDate: string; toDate: string }[] = [];
+    const resolvedTerminalItemIds: string[] = [];
 
     for (const req of requests) {
       // A successful historical request records the provider-confirmed range in
@@ -516,6 +525,20 @@ export class MarketCacheManager {
         if (hasBar) coverage.push(item);
       }
       const uncovered = subtractCoveredRanges(req.fromDate, req.toDate, coverage.map((item) => ({ fromDate: item.fromDate, toDate: item.toDate })));
+
+      // A previous manual detection may have created a slightly different
+      // range (for example before the market-local "today" rolled over).  If
+      // the current requirement is fully covered, those old terminal rows are
+      // obsolete and must not keep showing up as "暂不支持" or in exports.
+      if (uncovered.length === 0) {
+        const terminalItems = await db.marketWorkItems.where('kind').equals('historical_range_fill')
+          .and((item) =>
+            item.securityKey === req.securityKey &&
+            ['unsupported', 'failed_permanent'].includes(item.status)
+          )
+          .toArray();
+        resolvedTerminalItemIds.push(...terminalItems.map((item) => item.id));
+      }
 
       for (const missing of uncovered) {
         const id = `hist_fill_${req.market}_${req.symbol}_${missing.fromDate}_${missing.toDate}`;
@@ -548,6 +571,20 @@ export class MarketCacheManager {
 
     if (newItems.length > 0) {
       await upsertMarketWorkItems(newItems);
+    }
+
+    if (resolvedTerminalItemIds.length > 0) {
+      const now = Date.now();
+      await db.transaction('rw', db.marketWorkItems, async () => {
+        for (const id of new Set(resolvedTerminalItemIds)) {
+          await db.marketWorkItems.update(id, {
+            status: 'success',
+            nextRetryAt: undefined,
+            lastError: undefined,
+            updatedAt: now,
+          });
+        }
+      });
     }
 
     return { queued: newItems.length, items: result };

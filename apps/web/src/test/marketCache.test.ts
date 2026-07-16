@@ -421,6 +421,22 @@ describe('MarketCacheManager', () => {
     expect(await db.marketWorkItems.where('kind').equals('historical_range_fill').count()).toBe(0);
   });
 
+  it('clears an obsolete unsupported range once the current requirement is fully covered', async () => {
+    await db.transactions.add({ ledgerId: 1, tradeType: 'BUY', platform: 'SCHWAB', market: 'US', symbol: 'AAPL', name: 'Apple Inc.', tradeDate: '2026-07-01', tradeTime: '10:00:00', price: 180, quantity: 1, commission: 0, tax: 0, note: '', createdAt: Date.now(), updatedAt: Date.now(), investorName: null, assetType: 'STOCK', underlyingSymbol: null, expiryDate: null, strikePrice: null, optionType: null, fxFromCurrency: null, fxFromAmount: null, fxRate: null, sourceChannel: null, externalReference: null } as any);
+    await db.historicalBars.add({ id: 'US:AAPL:stock:1d:2026-07-02', securityKey: 'US:AAPL', symbol: 'AAPL', market: 'US', assetType: 'stock', resolution: '1d', tradeDate: '2026-07-02', close: 181, providerId: 'test', fetchedAt: Date.now(), dataQuality: 'normal' });
+    await db.historicalCoverage.add({ securityKey: 'US:AAPL', resolution: '1d', fromDate: '2026-07-01', toDate: '2026-07-12', providerId: 'test', coverageStatus: 'complete', updatedAt: Date.now() });
+    await db.marketWorkItems.add({
+      id: 'old-aapl-unsupported', kind: 'historical_range_fill', securityKey: 'US:AAPL', symbol: 'AAPL', market: 'US', assetType: 'stock', resolution: '1d',
+      requiredFromDate: '2026-07-01', requiredToDate: '2026-07-13', fetchFromDate: '2026-07-01', fetchToDate: '2026-07-13', sourceReason: 'manual', priority: 850,
+      status: 'unsupported', attemptCount: 1, lastError: '旧的错误结论', createdAt: Date.now(), updatedAt: Date.now(),
+    });
+
+    const summary = await marketCacheManager.detectAndQueueMissingRanges(new Date('2026-07-12T12:00:00Z'));
+
+    expect(summary.queued).toBe(0);
+    expect(await db.marketWorkItems.get('old-aapl-unsupported')).toMatchObject({ status: 'success' });
+  });
+
   it('requeues a permanently failed history range after detecting it again', async () => {
     await db.transactions.add({ ledgerId: 1, tradeType: 'BUY', platform: 'SCHWAB', market: 'US', symbol: 'AAPL', name: 'Apple Inc.', tradeDate: '2026-07-01', tradeTime: '10:00:00', price: 180, quantity: 1, commission: 0, tax: 0, note: '', createdAt: Date.now(), updatedAt: Date.now(), investorName: null, assetType: 'STOCK', underlyingSymbol: null, expiryDate: null, strikePrice: null, optionType: null, fxFromCurrency: null, fxFromAmount: null, fxToCurrency: null, fxToAmount: null, fxRate: null, sourceChannel: null, externalReference: null } as any);
     const referenceAt = new Date('2026-07-12T12:00:00Z');
@@ -436,6 +452,22 @@ describe('MarketCacheManager', () => {
     expect(requeued).toMatchObject({ status: 'pending', attemptCount: 0 });
     expect(requeued?.nextRetryAt).toBeUndefined();
     expect(requeued?.lastError).toBeUndefined();
+  });
+
+  it('makes a retry-scheduled history range executable immediately after manual detection', async () => {
+    await db.transactions.add({ ledgerId: 1, tradeType: 'BUY', platform: 'SCHWAB', market: 'US', symbol: 'AAPL', name: 'Apple Inc.', tradeDate: '2026-07-01', tradeTime: '10:00:00', price: 180, quantity: 1, commission: 0, tax: 0, note: '', createdAt: Date.now(), updatedAt: Date.now(), investorName: null, assetType: 'STOCK', underlyingSymbol: null, expiryDate: null, strikePrice: null, optionType: null, fxFromCurrency: null, fxFromAmount: null, fxToCurrency: null, fxToAmount: null, fxRate: null, sourceChannel: null, externalReference: null } as any);
+    const referenceAt = new Date('2026-07-12T12:00:00Z');
+    await marketCacheManager.detectAndQueueMissingRanges(referenceAt);
+    const item = await db.marketWorkItems.where('kind').equals('historical_range_fill').first();
+    await db.marketWorkItems.update(item!.id, { status: 'retry_scheduled', attemptCount: 3, nextRetryAt: Date.now() + 60 * 60 * 1000, lastError: '旧退避错误', providerTried: ['stock-sdk'] });
+
+    await marketCacheManager.detectAndQueueMissingRanges(referenceAt);
+    const reactivated = await db.marketWorkItems.get(item!.id);
+
+    expect(reactivated).toMatchObject({ status: 'pending', attemptCount: 0 });
+    expect(reactivated?.nextRetryAt).toBeUndefined();
+    expect(reactivated?.lastError).toBeUndefined();
+    expect(reactivated?.providerTried).toBeUndefined();
   });
 
   it('extends HK history through the market-local current date after the last transaction', async () => {
@@ -629,6 +661,33 @@ describe('MarketCacheManager', () => {
     // TSLA remains as one item
     expect(data.items.some((item) => item.securityKey === 'US:TSLA')).toBe(true);
     expect(data.items).toHaveLength(2);
+  });
+
+  it('keeps unsupported ranges in the missing-data export for a future Worker fill', async () => {
+    await db.marketWorkItems.add({
+      id: 'hist_fill_US_BRKB_2026-07-01_2026-07-02',
+      kind: 'historical_range_fill',
+      securityKey: 'US:BRKB',
+      symbol: 'BRKB',
+      market: 'US',
+      assetType: 'stock',
+      resolution: '1d',
+      requiredFromDate: '2026-07-01',
+      requiredToDate: '2026-07-02',
+      fetchFromDate: '2026-07-01',
+      fetchToDate: '2026-07-02',
+      sourceReason: 'manual',
+      priority: 850,
+      status: 'unsupported',
+      attemptCount: 1,
+      lastError: 'MarketData.app 被浏览器跨域限制，静态网页暂不支持；待 Yahoo Worker。',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    const { data } = await marketCacheManager.exportMissingMarketData();
+
+    expect(data.items).toContainEqual(expect.objectContaining({ securityKey: 'US:BRKB', symbol: 'BRKB' }));
   });
 
   it('should queue a single historical range task for one security via queueHistoricalRangeForSecurity', async () => {

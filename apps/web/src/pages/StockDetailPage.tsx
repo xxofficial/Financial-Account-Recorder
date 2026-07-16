@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useLiveQuery } from 'dexie-react-hooks';
-import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
+import { useParams, useSearchParams } from 'react-router-dom';
 import { Calendar, FileText, Info, RefreshCw, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
 import { useAppShell } from '../app/AppShell';
@@ -9,6 +9,7 @@ import { securityDetailName } from '../core/portfolio/securityDetailRoute';
 import { DisplayCurrency, TradeTypeLabels } from '../shared/models';
 import { type Transaction } from '../db/schema';
 import StockChart from '../components/StockChart';
+import { AdaptiveSingleLineText } from '../components/AdaptiveSingleLineText';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
@@ -51,7 +52,6 @@ function txAmount(tx: Transaction, currency: { cnyRate: number }) {
 
 export default function StockDetailPage() {
   const { symbol, market } = useParams();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const targetSymbol = symbol || '';
   const targetMarket = market || 'US';
@@ -86,18 +86,12 @@ export default function StockDetailPage() {
       (activePlatform === null || tx.platform === activePlatform);
   }), [activePlatform, rawTxns, targetMarket, targetSymbol]);
 
-  const hasStockDisplayName = useMemo(() => {
-    const quoteName = quotes.find((quote) => quote.symbol === targetSymbol && quote.market === targetMarket)?.name;
-    if (quoteName && quoteName.trim() && quoteName.trim().toUpperCase() !== targetSymbol.toUpperCase()) return true;
-    const stockName = securityTxns.find((tx) => tx.assetType !== 'OPTION')?.name;
-    return Boolean(stockName?.trim() && stockName.trim().toUpperCase() !== targetSymbol.toUpperCase());
-  }, [quotes, securityTxns, targetMarket, targetSymbol]);
-
   useEffect(() => {
-    if (!targetSymbol || targetMarket === 'CASH' || hasStockDisplayName) return;
-    // The resolver writes a quote snapshot; useLiveQuery then refreshes the title.
-    void cacheService.resolveSecurityName(targetSymbol, targetMarket).catch(() => null);
-  }, [hasStockDisplayName, targetMarket, targetSymbol]);
+    if (!targetSymbol || targetMarket === 'CASH') return;
+    // Reconcile broker-provided labels against the configured market source.
+    // The service writes one canonical name back to every platform's records.
+    void cacheService.repairSecurityNames([{ symbol: targetSymbol, market: targetMarket }]).catch(() => null);
+  }, [targetMarket, targetSymbol]);
 
   const securityDateBounds = useMemo(() => {
     const dates = securityTxns.map((tx) => tx.tradeDate).sort();
@@ -204,11 +198,12 @@ export default function StockDetailPage() {
   const rangeCoverage = coverage.find((item) => item.resolution === '1d' && item.fromDate <= rangeBounds.fromDate && item.toDate >= rangeBounds.toDate);
   const needsKlineFill = activeTab === 'STOCK' && (!rangeCoverage || rangeCoverage.coverageStatus !== 'complete' || !hasChartData);
   const hasAnyKline = historicalBars.some((bar) => bar.resolution === '1d');
+  const latestDataDate = useMemo(() => historicalBars.filter((bar) => bar.resolution === '1d').map((bar) => bar.tradeDate).sort().at(-1) ?? securityDateBounds.max, [historicalBars, securityDateBounds.max]);
   const isProfit = stats.totalPnl >= 0;
   const selectedPnl = activeTab === 'STOCK' ? stats.stockPnl : stats.optionPnl;
 
   return <div className="page page-secondary stock-detail-page">
-    <SecondaryPageHeader title={<span className="secondary-page-title-stack"><span>{stats.securityName} ({targetSymbol}.{targetMarket})</span><small>包含正股及全部关联期权交易</small></span>} fallback="/analysis" />
+    <SecondaryPageHeader title={<span className="secondary-page-title-stack"><span className="stock-detail-title-line"><AdaptiveSingleLineText text={stats.securityName} className="stock-detail-security-name" maxFontSize={20} /><span className="stock-detail-security-code">({targetSymbol}.{targetMarket})</span></span><small>更新至: {latestDataDate.replaceAll('-', '.')}</small></span>} fallback="/analysis" />
     <div className="range-selector stock-detail-range-selector">
       {rangeOptions.map(([value, label]) => <button key={value} type="button" className={range === value ? 'active' : ''} onClick={() => setRange(value)}>{label}</button>)}
     </div>
@@ -220,12 +215,12 @@ export default function StockDetailPage() {
       {needsKlineFill && hasChartData && <div className="stock-detail-kline-fill"><span>当前时间范围内日 K 线不完整，可按需补齐。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}补齐日 K 线</button></div>}
     </section>}
 
-    <section className="stock-detail-card stock-detail-pnl-card"><div className="stock-detail-card-title"><span>累计盈亏</span><span className="stock-detail-card-helper">{rangeBounds.fromDate} – {rangeBounds.toDate}</span></div><div className="stock-detail-pnl-label">累计盈亏 ({displayCurrency.code})</div><strong className={isProfit ? 'profit' : 'loss'}>{signed(stats.totalPnl, displayCurrency)}</strong><div className="stock-detail-split"><span>正股 <b className={stats.stockPnl >= 0 ? 'profit' : 'loss'}>{signed(stats.stockPnl, displayCurrency)}</b></span><span>衍生品 <b className={stats.optionPnl >= 0 ? 'profit' : 'loss'}>{signed(stats.optionPnl, displayCurrency)}</b></span></div></section>
+    <section className="stock-detail-card stock-detail-pnl-card"><div className="stock-detail-card-title"><span>累计盈亏（{displayCurrency.code}）</span><span className="stock-detail-card-helper">{rangeBounds.fromDate} – {rangeBounds.toDate}</span></div><strong className={isProfit ? 'profit' : 'loss'}>{signed(stats.totalPnl, displayCurrency)}</strong><div className="stock-detail-split"><span>正股 <b className={stats.stockPnl >= 0 ? 'profit' : 'loss'}>{signed(stats.stockPnl, displayCurrency)}</b></span><span>衍生品 <b className={stats.optionPnl >= 0 ? 'profit' : 'loss'}>{signed(stats.optionPnl, displayCurrency)}</b></span></div></section>
 
     {stats.hasOptions && <div className="stock-detail-tabs"><button type="button" className={activeTab === 'STOCK' ? 'active' : ''} onClick={() => setActiveTab('STOCK')}>正股</button><button type="button" className={activeTab === 'OPTION' ? 'active' : ''} onClick={() => setActiveTab('OPTION')}>衍生品</button></div>}
 
     <section className="stock-detail-card stock-detail-breakdown-card"><div className="stock-detail-card-title"><Info size={16} /><span>盈亏构成</span></div><div className="stock-detail-lines"><div className="stock-detail-line"><span>持仓市值</span><b>{nativeAmount(stats.closingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计入账金额<small>股票/期权卖出</small></span><b className="profit">{nativeAmount(stats.sellProceeds, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计出账金额<small>股票/期权买入</small></span><b className="loss">-{nativeAmount(stats.buyCost, displayCurrency)}</b></div><div className="stock-detail-line"><span>费用合计<small>佣金及税费</small></span><b className="loss">-{nativeAmount(stats.fees, displayCurrency)}</b></div><div className="stock-detail-divider" /><div className="stock-detail-line stock-detail-total"><span>盈亏合计</span><b className={selectedPnl >= 0 ? 'profit' : 'loss'}>{signed(selectedPnl, displayCurrency)}</b></div></div><p className="stock-detail-formula">盈亏合计 = 持仓市值 + 累计入账金额 − 累计出账金额 − 费用</p></section>
 
-    <section className="stock-detail-card stock-detail-transactions-card"><div className="stock-detail-card-title"><FileText size={16} /><span>流水明细</span><small>共 {stats.txnsList.length} 笔</small></div>{stats.txnsList.length === 0 ? <div className="stock-detail-empty">当前区间内没有交易记录</div> : <div className="stock-detail-transactions">{stats.txnsList.map((tx) => { const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN'; const value = txAmount(tx, displayCurrency); return <button type="button" className="stock-detail-transaction" key={tx.id} onClick={() => navigate(`/transactions/${tx.id}`)}><div><span className={`badge ${isBuy ? 'success' : 'error'}`}>{TradeTypeLabels[tx.tradeType] || tx.tradeType}</span><b>{tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {amount(convertToCny(tx.price, tx.market, defaultExchangeRates), displayCurrency)}</b></div><strong className={isBuy ? 'loss' : 'profit'}>{isBuy ? '-' : '+'}{displayCurrency.symbol}{value.toFixed(2)}</strong><small><Calendar size={12} />{tx.tradeDate} {tx.tradeTime} <span>费用 {amount(convertToCny(tx.commission + tx.tax, tx.market, defaultExchangeRates), displayCurrency)}</span></small></button>; })}</div>}</section>
+    <section className="stock-detail-card stock-detail-transactions-card"><div className="stock-detail-card-title"><FileText size={16} /><span>流水明细</span><small>共 {stats.txnsList.length} 笔</small></div>{stats.txnsList.length === 0 ? <div className="stock-detail-empty">当前区间内没有交易记录</div> : <div className="stock-detail-transactions">{stats.txnsList.map((tx) => { const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN'; const value = txAmount(tx, displayCurrency); return <div className="stock-detail-transaction" key={tx.id}><div><span className={`badge ${isBuy ? 'success' : 'error'}`}>{TradeTypeLabels[tx.tradeType] || tx.tradeType}</span><b>{tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {amount(convertToCny(tx.price, tx.market, defaultExchangeRates), displayCurrency)}</b></div><strong className={isBuy ? 'loss' : 'profit'}>{isBuy ? '-' : '+'}{displayCurrency.symbol}{value.toFixed(2)}</strong><small><Calendar size={12} />{tx.tradeDate} {tx.tradeTime} <span>费用 {amount(convertToCny(tx.commission + tx.tax, tx.market, defaultExchangeRates), displayCurrency)}</span></small></div>; })}</div>}</section>
   </div>;
 }

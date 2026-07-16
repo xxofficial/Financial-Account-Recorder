@@ -20,5 +20,9 @@ export function securityDetailPath(target: SecurityDetailTarget): string {
 
 /** A derivative name must never become the title of its underlying's page. */
 export function securityDetailName(symbol: string, quoteName?: string | null, stockTransactionName?: string | null): string {
-  return quoteName?.trim() || stockTransactionName?.trim() || symbol;
+  const cleanSymbol = symbol.trim().toUpperCase();
+  const meaningfulName = [quoteName, stockTransactionName]
+    .map((name) => name?.trim())
+    .find((name): name is string => Boolean(name) && name!.toUpperCase() !== cleanSymbol);
+  return meaningfulName || symbol;
 }

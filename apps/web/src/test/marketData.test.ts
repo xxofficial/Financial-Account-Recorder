@@ -47,14 +47,28 @@ describe('stock-sdk stock routing', () => {
     expect(plans[0]).toMatchObject({ providerId: 'stock-sdk', strategy: 'symbol_range' });
   });
 
-  it('keeps option providers isolated from stock routes', () => {
+  it('uses MarketData.app as a US stock-history fallback while keeping Android option-only', () => {
     const marketdata = new MarketDataAppProvider();
     const android = new AndroidDefaultMarketProvider();
-    expect(marketdata.supportsAssetType('STOCK')).toBe(false);
+    expect(marketdata.supportsAssetType('STOCK')).toBe(true);
     expect(marketdata.supportsAssetType('OPTION')).toBe(true);
     expect(android.supportsAssetType('STOCK')).toBe(false);
     expect(android.supportsMarket('HK')).toBe(false);
     expect(android.supportsAssetType('OPTION')).toBe(true);
+  });
+
+  it('plans an untried fallback provider instead of retrying stock-sdk forever', () => {
+    const plans = HistoricalRequestPlanner.buildRequestPlans({
+      pendingItems: [{ id: 'brkb', kind: 'historical_range_fill', securityKey: 'US:BRKB', symbol: 'BRKB', market: 'US', assetType: 'stock', resolution: '1d', requiredFromDate: '2026-07-01', requiredToDate: '2026-07-02', fetchFromDate: '2026-07-01', fetchToDate: '2026-07-02', sourceReason: 'manual', priority: 1, status: 'pending', attemptCount: 0, providerTried: ['stock-sdk'], createdAt: 1, updatedAt: 1 }],
+      providerConfigs: [
+        { provider: 'stock-sdk', enabled: 1, priority: 0, apiKey: '', baseUrl: 'stock-sdk', optionsJson: '{}', createdAt: 1, updatedAt: 1 },
+        { provider: 'marketdata', enabled: 1, priority: 2, apiKey: 'local-token', baseUrl: 'https://api.marketdata.app/v1', optionsJson: '{}', createdAt: 1, updatedAt: 1 },
+      ],
+      providerCapabilities: INITIAL_CAPABILITIES, quotaStates: [], now: 2,
+    });
+
+    expect(plans).toHaveLength(1);
+    expect(plans[0]).toMatchObject({ providerId: 'marketdata', strategy: 'symbol_range' });
   });
 
   it('keeps the requested option end date when MarketData requires an exclusive boundary', () => {

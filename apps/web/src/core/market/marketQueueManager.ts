@@ -83,13 +83,31 @@ export async function upsertMarketWorkItems(inputs: MarketWorkItemInput[]): Prom
             const mergedFetchFrom = existingFetchFrom < inputFetchFrom ? existingFetchFrom : inputFetchFrom;
             const mergedFetchTo = existingFetchTo > inputFetchTo ? existingFetchTo : inputFetchTo;
 
+            const shouldReactivate =
+              input.sourceReason === 'manual' &&
+              existing.status !== 'running';
+
             await db.marketWorkItems.update(existing.id, {
               requiredFromDate: mergedFrom,
               requiredToDate: mergedTo,
               fetchFromDate: mergedFetchFrom,
               fetchToDate: mergedFetchTo,
               priority: Math.max(existing.priority, input.priority),
-              status: 'pending', // Reset status so it executes again
+              // A user-triggered detection is an explicit retry request.  Do not
+              // retain a future backoff timestamp, otherwise the item looks
+              // pending but the executor will silently skip it.  Running work
+              // is intentionally left alone so a concurrent request is not
+              // interrupted.
+              ...(shouldReactivate
+                ? {
+                    status: 'pending' as const,
+                    attemptCount: 0,
+                    nextRetryAt: undefined,
+                    lastError: undefined,
+                    providerTried: undefined,
+                    preferredProviderId: undefined,
+                  }
+                : {}),
               updatedAt: now
             });
 

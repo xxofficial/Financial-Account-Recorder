@@ -77,4 +77,26 @@ describe('security suggestions', () => {
     await expect(service.resolveSecurityName('ST', 'US')).resolves.toBe('Sensata Technologies');
     await expect(db.quoteSnapshots.get('US:ST')).resolves.toMatchObject({ symbol: 'ST', market: 'US', name: 'Sensata Technologies', assetType: 'STOCK' });
   });
+
+  it('uses the market source to unify a symbol name across broker platforms', async () => {
+    await db.transactions.bulkAdd([
+      transaction({ symbol: 'NVO', name: 'NOVO-NORDISK A S FSPONSORED ADR 1 ADR REPS 1 ORD SHS', platform: 'SCHWAB' }),
+      transaction({ symbol: 'NVO', name: 'NVO', platform: 'MANUAL' }),
+    ] as any);
+    const service = new MarketDataCacheService() as any;
+    service.getActiveProviders = async () => [{
+      apiKey: '',
+      provider: {
+        name: 'stock-sdk', supportsAssetType: () => true, supportsMarket: () => true,
+        searchSecurity: async () => ({ ok: true, status: 'success', provider: 'stock-sdk', data: { symbol: 'NVO', market: 'US', name: 'Novo Nordisk A/S', assetType: 'STOCK' } }),
+      },
+    }];
+
+    await expect(service.repairSecurityNames([{ symbol: 'NVO', market: 'US' }])).resolves.toMatchObject({ resolvedSecurities: 1, updatedTransactions: 2, unresolvedSecurities: 0 });
+    await expect(db.transactions.where('[market+symbol]').equals(['US', 'NVO']).toArray()).resolves.toEqual([
+      expect.objectContaining({ name: 'Novo Nordisk A/S' }),
+      expect.objectContaining({ name: 'Novo Nordisk A/S' }),
+    ]);
+    await expect(db.quoteSnapshots.get('US:NVO')).resolves.toMatchObject({ name: 'Novo Nordisk A/S' });
+  });
 });

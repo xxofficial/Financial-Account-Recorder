@@ -224,10 +224,11 @@ function CalendarGrid({ calendar, mode, renderValue, onOpen }: { calendar: Retur
       if (mode === 'DAY' && !cell.current) return <span key={cell.date} className="analysis-calendar-empty" aria-hidden="true" />;
       const hasValue = Boolean(cell.point && Math.abs(cell.point.dailyProfitCny) > .005);
       const closed = mode === 'DAY' && cell.isWeekend && !hasValue;
+      const showZero = mode === 'DAY' && cell.date <= toDateString(new Date());
       const tone = hasValue ? cell.point.dailyProfitCny > 0 ? 'profit-cell' : 'loss-cell' : 'neutral-cell';
       return <button key={cell.date} className={`${closed ? 'closed' : ''} ${tone}`} onClick={() => !closed && onOpen(cell.date)} disabled={closed}>
         <small>{cell.label ?? (mode === 'DAY' ? Number(cell.date.slice(-2)) : '')}</small>
-        {closed ? <b className="closed-label">休市</b> : hasValue && <b className={cell.point.dailyProfitCny >= 0 ? 'profit' : 'loss'}>{renderValue(cell.point)}</b>}
+        {closed ? <b className="closed-label">休市</b> : hasValue ? <b className={cell.point.dailyProfitCny >= 0 ? 'profit' : 'loss'}>{renderValue(cell.point)}</b> : showZero ? <b className="neutral">0</b> : null}
       </button>;
     })}
   </div>;

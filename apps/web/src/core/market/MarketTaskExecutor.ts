@@ -45,6 +45,59 @@ function areRangesMergeable(
 export class MarketTaskExecutor {
   private static heartbeatInterval: any = null;
 
+  private static async waitForQueueWake(
+    executorId: string,
+    resumeAt: number,
+    message: string,
+  ): Promise<void> {
+    const delay = Math.max(250, resumeAt - Date.now());
+    await db.marketExecutorState.update('global', {
+      status: 'running',
+      activeProviderId: undefined,
+      activeProviderName: undefined,
+      activeWorkItemIds: [],
+      currentMessage: message,
+      updatedAt: Date.now(),
+    });
+    console.log(`Executor ${executorId} waiting ${delay}ms before resuming.`);
+    await new Promise<void>((resolve) => window.setTimeout(resolve, delay));
+  }
+
+  private static nextRetryAt(items: Array<{ nextRetryAt?: number }>, now: number): number | undefined {
+    const retryTimes = items
+      .map((item) => item.nextRetryAt)
+      .filter((retryAt): retryAt is number => typeof retryAt === 'number' && retryAt > now);
+    return retryTimes.length > 0 ? Math.min(...retryTimes) : undefined;
+  }
+
+  private static nextProviderWakeAt(quotaStates: MarketProviderQuotaState[], now: number): number | undefined {
+    const wakeTimes = quotaStates
+      .flatMap((quota) => [quota.cooldownUntil, quota.remaining !== undefined && quota.remaining <= 0 ? quota.resetAt : undefined])
+      .filter((wakeAt): wakeAt is number => typeof wakeAt === 'number' && wakeAt > now);
+    return wakeTimes.length > 0 ? Math.min(...wakeTimes) : undefined;
+  }
+
+  /**
+   * A page reload can interrupt a browser request after its work item has been
+   * claimed.  Once this executor has taken the global lock, those `running`
+   * rows cannot belong to a live executor and must be made runnable again.
+   */
+  private static async recoverAbandonedRunningItems(now: number): Promise<void> {
+    const abandonedItems = await db.marketWorkItems.where('status').equals('running').toArray();
+    if (abandonedItems.length === 0) return;
+
+    await db.transaction('rw', db.marketWorkItems, async () => {
+      for (const item of abandonedItems) {
+        await db.marketWorkItems.update(item.id, {
+          status: 'pending',
+          nextRetryAt: undefined,
+          lastError: item.lastError || '上次行情同步被页面中断，已自动重新加入队列。',
+          updatedAt: now,
+        });
+      }
+    });
+  }
+
   /**
    * Start or wake up the executor
    */
@@ -71,6 +124,8 @@ export class MarketTaskExecutor {
       lastHeartbeatAt: now,
       updatedAt: now
     });
+
+    await this.recoverAbandonedRunningItems(now);
 
     console.log(`Starting MarketTaskExecutor loop: ${executorId}`);
     
@@ -120,6 +175,15 @@ export class MarketTaskExecutor {
           .sort((a, b) => b.priority - a.priority);
 
         if (executableItems.length === 0) {
+          const retryAt = this.nextRetryAt(pendingItems, now);
+          if (retryAt) {
+            await this.waitForQueueWake(
+              executorId,
+              retryAt,
+              `等待下一次行情重试：${new Date(retryAt).toLocaleTimeString('zh-CN')}`,
+            );
+            continue;
+          }
           console.log('No executable work items found. Executor entering idle/paused.');
           await db.marketExecutorState.update('global', {
             status: 'paused_no_work',
@@ -146,6 +210,37 @@ export class MarketTaskExecutor {
         });
 
         if (plans.length === 0) {
+          const unsupportedItems = executableItems.filter((item) => !HistoricalRequestPlanner.hasConfiguredProvider(
+            item,
+            providerConfigs,
+            INITIAL_CAPABILITIES,
+          ));
+          if (unsupportedItems.length > 0) {
+            await db.transaction('rw', db.marketWorkItems, async () => {
+              for (const item of unsupportedItems) {
+                await db.marketWorkItems.update(item.id, {
+                  status: 'unsupported',
+                  nextRetryAt: undefined,
+                  lastError: item.providerTried?.length
+                    ? '已尝试所有已配置行情源，当前没有可用回退源。'
+                    : '当前没有支持此标的的已配置行情源。',
+                  updatedAt: now,
+                });
+              }
+            });
+            // Re-evaluate the remaining queue.  This avoids presenting an
+            // unsupported task as a quota pause that can never self-heal.
+            continue;
+          }
+          const providerWakeAt = this.nextProviderWakeAt(quotaStates, now);
+          if (providerWakeAt) {
+            await this.waitForQueueWake(
+              executorId,
+              providerWakeAt,
+              `行情源冷却中，将于 ${new Date(providerWakeAt).toLocaleTimeString('zh-CN')} 自动继续同步。`,
+            );
+            continue;
+          }
           console.log('No executable request plans could be constructed (providers cooldown or quota limit).');
           await db.marketExecutorState.update('global', {
             status: 'paused_all_quota',
@@ -338,7 +433,7 @@ export class MarketTaskExecutor {
       remaining = 0;
     } else if (result.status === 'provider_unconfigured' || result.errorCode === 'AUTH_FAILED') {
       cooldownUntil = now + 5 * 60 * 1000; // 5 min cooldown for auth errors
-    } else if (!result.ok && ['network_error', 'cors_error', 'timeout'].includes(result.status)) {
+    } else if (!result.ok && ['network_error', 'timeout'].includes(result.status)) {
       cooldownUntil = now + 30 * 1000; // 30s backoff for connection errors
     }
 
@@ -367,6 +462,107 @@ export class MarketTaskExecutor {
         detail: { cooldownUntil }
       });
     }
+  }
+
+  private static appendProviderTried(item: { providerTried?: string[] }, providerId: string): string[] {
+    return [...new Set([...(item.providerTried || []), providerId])];
+  }
+
+  private static shouldFallbackFromStockSdk(
+    plan: HistoricalRequestPlan,
+    result: MarketDataResult<any>,
+    noData: boolean,
+    previousAttemptCount: number,
+  ): boolean {
+    // `fetch failed` does not prove a symbol is unavailable: stock-sdk may
+    // rotate through upstream CDN hosts and one attempt can fail while the
+    // same symbol succeeds on the next attempt.  Only deterministic SDK
+    // failures and empty data advance to the fallback provider.  For a
+    // transient connection error we still give stock-sdk two retries first;
+    // after the third failed request, try the independently hosted fallback
+    // instead of waiting until the task reaches its permanent-failure cap.
+    return plan.providerId === 'stock-sdk' && (
+      noData ||
+      result.errorCode === 'SDK_REQUEST_ERROR' ||
+      (result.errorCode === 'NETWORK_UNREACHABLE' && previousAttemptCount >= 2)
+    );
+  }
+
+  private static shouldMarkMarketDataUnsupported(plan: HistoricalRequestPlan, result: MarketDataResult<any>, noData: boolean): boolean {
+    return plan.providerId === 'marketdata' && (
+      noData ||
+      result.status === 'cors_error' ||
+      result.status === 'provider_unconfigured' ||
+      result.httpStatus === 404
+    );
+  }
+
+  /** Advance deterministic history failures to the next provider, or stop with a useful terminal reason. */
+  private static async handleHistoricalFailure(
+    plan: HistoricalRequestPlan,
+    result: MarketDataResult<any>,
+    options: { noData?: boolean } = {},
+  ): Promise<void> {
+    const now = Date.now();
+    const noData = options.noData === true;
+    await db.transaction('rw', db.marketWorkItems, async () => {
+      for (const itemId of plan.workItemIds) {
+        const item = await db.marketWorkItems.get(itemId);
+        if (!item) continue;
+
+        const fallbackFromStockSdk = this.shouldFallbackFromStockSdk(plan, result, noData, item.attemptCount);
+        const unsupportedMarketData = this.shouldMarkMarketDataUnsupported(plan, result, noData);
+        // Only deterministic provider outcomes consume a fallback source.
+        // A transient request failure must keep the current provider eligible
+        // for the next retry; otherwise one failed connection makes the task
+        // look as if every provider has been exhausted.
+        const providerTried = (fallbackFromStockSdk || unsupportedMarketData)
+          ? this.appendProviderTried(item, plan.providerId)
+          : item.providerTried;
+        if (fallbackFromStockSdk) {
+          await db.marketWorkItems.update(itemId, {
+            status: 'pending',
+            attemptCount: 0,
+            nextRetryAt: undefined,
+            providerTried,
+            lastError: 'stock-sdk 未返回可用历史数据，正在尝试下一个行情源。',
+            updatedAt: now,
+          });
+          continue;
+        }
+
+        if (unsupportedMarketData) {
+          const reason = result.status === 'cors_error'
+            ? '浏览器拒绝了 MarketData.app 的跨域请求，当前连接不可用。'
+            : noData
+              ? 'MarketData.app 未返回该标的的历史数据，当前暂不支持。'
+              : 'MarketData.app 当前不可用于此请求，当前暂不支持。';
+          await db.marketWorkItems.update(itemId, {
+            status: 'unsupported',
+            attemptCount: item.attemptCount + 1,
+            nextRetryAt: undefined,
+            providerTried,
+            lastError: reason,
+            updatedAt: now,
+          });
+          continue;
+        }
+
+        const errStatus = result.status === 'rate_limited' ? 'paused_quota' : 'retry_scheduled';
+        const attempt = item.attemptCount + 1;
+        const isPerm = attempt >= 5 && errStatus === 'retry_scheduled';
+        await db.marketWorkItems.update(itemId, {
+          status: isPerm ? 'failed_permanent' : errStatus,
+          attemptCount: attempt,
+          nextRetryAt: errStatus === 'retry_scheduled'
+            ? now + Math.min(30 * 1000 * Math.pow(2, attempt), 2 * 60 * 60 * 1000)
+            : undefined,
+          lastError: result.message || result.errorCode || result.status,
+          updatedAt: now,
+        });
+      }
+    });
+
   }
 
   /**
@@ -539,6 +735,14 @@ export class MarketTaskExecutor {
           });
         }
 
+        // An empty successful response is not coverage.  stock-sdk can fall
+        // through to MarketData.app; MarketData.app itself becomes a clear
+        // terminal "暂不支持" result instead of a misleading completed range.
+        if (mappedBars.length === 0) {
+          await this.handleHistoricalFailure(plan, result, { noData: true });
+          return;
+        }
+
         // Update historicalCoverage
         for (const sec of plan.securities) {
           const fromStr = plan.fromDate || plan.date!;
@@ -578,35 +782,19 @@ export class MarketTaskExecutor {
           }
         }
 
-        // Mark work items as success/partial_success
+        // Mark work items as success.
         await db.transaction('rw', db.marketWorkItems, async () => {
           for (const itemId of plan.workItemIds) {
             await db.marketWorkItems.update(itemId, {
-              status: mappedBars.length > 0 ? 'success' : 'no_data',
+              status: 'success',
               lastError: undefined,
+              nextRetryAt: undefined,
               updatedAt: now
             });
           }
         });
       } else {
-        // Failed completely
-        const errStatus = result.status === 'rate_limited' ? 'paused_quota' : 'retry_scheduled';
-        await db.transaction('rw', db.marketWorkItems, async () => {
-          for (const itemId of plan.workItemIds) {
-            const item = await db.marketWorkItems.get(itemId);
-            if (item) {
-              const attempt = item.attemptCount + 1;
-              const isPerm = attempt >= 5 && errStatus === 'retry_scheduled';
-              await db.marketWorkItems.update(itemId, {
-                status: isPerm ? 'failed_permanent' : errStatus,
-                attemptCount: attempt,
-                nextRetryAt: errStatus === 'retry_scheduled' ? now + Math.min(30 * 1000 * Math.pow(2, attempt), 2 * 60 * 60 * 1000) : undefined,
-                lastError: result.message || result.errorCode || result.status,
-                updatedAt: now
-              });
-            }
-          }
-        });
+        await this.handleHistoricalFailure(plan, result);
       }
     }
   }

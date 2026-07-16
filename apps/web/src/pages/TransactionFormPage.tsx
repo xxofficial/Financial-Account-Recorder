@@ -417,7 +417,7 @@ export default function TransactionFormPage() {
       } else {
     const optionSymbol = `${underlying.trim().toUpperCase()} ${expiry.replace(/-/g, '').substring(2)}${optionType.charAt(0)}${strike}`;
     const computedSymbol = isSecurity ? (assetType === 'OPTION' ? optionSymbol : symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? 'FX' : 'CASH');
-    const resolvedName = isSecurity && assetType !== 'OPTION' && !name.trim() && symbol.trim()
+    const resolvedName = isSecurity && assetType !== 'OPTION' && symbol.trim()
       ? await cacheService.resolveSecurityName(symbol.trim().toUpperCase(), market).catch(() => null)
       : null;
     const computedName = isSecurity ? (assetType === 'OPTION' ? `${underlying.trim().toUpperCase()} ${expiry} ${optionType === 'CALL' ? 'CALL' : 'PUT'} $${strike}` : resolvedName || name.trim() || symbol.trim().toUpperCase()) : (tradeType === 'FX_CONVERSION' ? '外汇兑换' : tradeType === 'DEPOSIT' ? '现金' : TradeTypeLabels[tradeType]);
