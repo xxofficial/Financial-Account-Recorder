@@ -18,7 +18,7 @@ export interface SplitActionEvent {
   name: string;
   tradeDate: string;
   ratio: number;
-  source: 'stock-sdk-eastmoney' | 'yahoo-chart';
+  source: 'stock-sdk-eastmoney' | 'yahoo-chart' | 'massive-splits';
   externalReference: string;
   detail: string;
 }
@@ -116,6 +116,32 @@ export function parseYahooSplitEvents(payload: unknown, market: 'HK' | 'US', fal
   });
 }
 
+/** Parses Massive's /v3/reference/splits response. split_to is the post-split share count. */
+export function parseMassiveSplitEvents(payload: unknown, fallbackSymbol: string): SplitActionEvent[] {
+  const rows = (payload as { results?: unknown })?.results;
+  if (!Array.isArray(rows)) return [];
+  const symbol = fallbackSymbol.trim().replace(/\.US$/i, '').toUpperCase();
+  return rows.flatMap((row: any) => {
+    const splitTo = Number(row?.split_to);
+    const splitFrom = Number(row?.split_from);
+    const tradeDate = String(row?.execution_date || '').slice(0, 10);
+    const ratio = Number((splitTo / splitFrom).toFixed(8));
+    if (!isValidDate(tradeDate) || !Number.isFinite(splitTo) || !Number.isFinite(splitFrom) || splitTo <= 0 || splitFrom <= 0 || !Number.isFinite(ratio) || ratio <= 0 || Math.abs(ratio - 1) < EPSILON) return [];
+    const event: SplitActionEvent = {
+      market: 'US',
+      symbol,
+      name: String(row?.ticker || symbol),
+      tradeDate,
+      ratio,
+      source: 'massive-splits',
+      externalReference: '',
+      detail: `Massive 拆并股 ${splitFrom}:${splitTo}`,
+    };
+    event.externalReference = actionReference(event);
+    return [event];
+  });
+}
+
 function yahooSymbol(symbol: string, market: 'HK' | 'US'): string {
   const raw = symbol.trim().replace(/\.(HK|US)$/i, '');
   return market === 'HK' ? `${raw.padStart(5, '0')}.HK` : raw.toUpperCase();
@@ -127,6 +153,19 @@ async function fetchYahooSplits(symbol: string, market: 'HK' | 'US'): Promise<Sp
   const response = await marketFetch(url, { headers: { Accept: 'application/json' } });
   if (!response.ok) throw new Error(`Yahoo 公司行动请求失败 (${response.status})`);
   return parseYahooSplitEvents(await response.json(), market, symbol);
+}
+
+// Massive's v3 reference splits endpoint is deprecated; use the current
+// Stocks API so the company-action sync remains supported.
+const MASSIVE_SPLITS_ENDPOINT = 'https://api.massive.com/stocks/v1/splits';
+
+async function fetchMassiveSplits(symbol: string, apiKey: string): Promise<SplitActionEvent[]> {
+  const url = `${MASSIVE_SPLITS_ENDPOINT}?ticker=${encodeURIComponent(symbol.trim().replace(/\.US$/i, '').toUpperCase())}`;
+  const response = await marketFetch(url, { headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` } });
+  if (!response.ok) throw new Error(response.status === 401 || response.status === 403
+    ? `Massive 密钥无效、无权限或套餐不支持 (${response.status})`
+    : `Massive 公司行动请求失败 (${response.status})`);
+  return parseMassiveSplitEvents(await response.json(), symbol);
 }
 
 async function fetchAShareSplits(symbol: string): Promise<SplitActionEvent[]> {
@@ -151,14 +190,20 @@ async function fetchAShareSplits(symbol: string): Promise<SplitActionEvent[]> {
   });
 }
 
-/** Fetches free-source split events for symbols already present in the ledger. */
+/** Fetches split events for symbols already present in the ledger. */
 export async function fetchSplitEvents(symbols: Array<{ symbol: string; market: CorporateActionMarket }>): Promise<SplitActionEvent[]> {
   const unique = [...new Map(symbols.map((item) => [`${item.market}:${item.symbol}`, item])).values()];
   const events: SplitActionEvent[] = [];
   const failures: string[] = [];
+  const massive = await db.marketProviderConfigs.get('massive');
+  const massiveApiKey = massive?.enabled === 1 ? massive.apiKey.trim() : '';
   for (const item of unique) {
     try {
-      const rows = item.market === 'A_SHARE' ? await fetchAShareSplits(item.symbol) : await fetchYahooSplits(item.symbol, item.market);
+      const rows = item.market === 'A_SHARE'
+        ? await fetchAShareSplits(item.symbol)
+        : item.market === 'US' && massiveApiKey
+          ? await fetchMassiveSplits(item.symbol, massiveApiKey)
+          : await fetchYahooSplits(item.symbol, item.market);
       events.push(...rows);
     } catch (error) {
       failures.push(`${item.market}:${item.symbol}（${error instanceof Error ? error.message : String(error)}）`);
@@ -292,7 +337,9 @@ export async function applySplitCandidates(candidates: SplitActionCandidate[]): 
         ledgerId: candidate.ledgerId,
         tradeType: 'SPLIT',
         platform: candidate.platform,
-        sourceChannel: candidate.source === 'stock-sdk-eastmoney' ? 'CORPORATE_ACTION_STOCK_SDK' : 'CORPORATE_ACTION_YAHOO',
+        sourceChannel: candidate.source === 'stock-sdk-eastmoney'
+          ? 'CORPORATE_ACTION_STOCK_SDK'
+          : candidate.source === 'massive-splits' ? 'CORPORATE_ACTION_MASSIVE' : 'CORPORATE_ACTION_YAHOO',
         externalReference: candidate.externalReference,
         market: candidate.market,
         symbol: candidate.symbol,

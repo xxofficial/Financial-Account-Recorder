@@ -4,6 +4,7 @@ import { HistoricalRequestPlanner, INITIAL_CAPABILITIES, HistoricalRequestPlan }
 import { StockSdkProvider } from './stockSdkProvider';
 import { AndroidDefaultMarketProvider } from './androidDefaultMarketProvider';
 import { MarketDataAppProvider } from './marketDataProvider';
+import { MassiveProvider } from './massiveProvider';
 import { MarketDataProvider } from './marketDataProvider';
 import { logMarketRequest, MarketDataResult } from './marketRequestHelper';
 
@@ -11,7 +12,8 @@ import { logMarketRequest, MarketDataResult } from './marketRequestHelper';
 const providers: Record<string, MarketDataProvider> = {
   'android-default': new AndroidDefaultMarketProvider(),
   'stock-sdk': new StockSdkProvider(),
-  marketdata: new MarketDataAppProvider()
+  marketdata: new MarketDataAppProvider(),
+  massive: new MassiveProvider(),
 };
 
 /**
@@ -488,6 +490,16 @@ export class MarketTaskExecutor {
     );
   }
 
+  private static shouldFallbackFromMassive(plan: HistoricalRequestPlan, result: MarketDataResult<any>, noData: boolean): boolean {
+    return plan.providerId === 'massive' && (
+      noData ||
+      result.httpStatus === 401 ||
+      result.httpStatus === 403 ||
+      result.httpStatus === 404 ||
+      result.errorCode === 'JSON_PARSE_ERROR'
+    );
+  }
+
   private static shouldMarkMarketDataUnsupported(plan: HistoricalRequestPlan, result: MarketDataResult<any>, noData: boolean): boolean {
     return plan.providerId === 'marketdata' && (
       noData ||
@@ -513,21 +525,22 @@ export class MarketTaskExecutor {
         if (!item) continue;
 
         const fallbackFromStockSdk = this.shouldFallbackFromStockSdk(plan, result, noData, item.attemptCount);
+        const fallbackFromMassive = this.shouldFallbackFromMassive(plan, result, noData);
         const unsupportedMarketData = this.shouldMarkMarketDataUnsupported(plan, result, noData);
         // Only deterministic provider outcomes consume a fallback source.
         // A transient request failure must keep the current provider eligible
         // for the next retry; otherwise one failed connection makes the task
         // look as if every provider has been exhausted.
-        const providerTried = (fallbackFromStockSdk || unsupportedMarketData)
+        const providerTried = (fallbackFromStockSdk || fallbackFromMassive || unsupportedMarketData)
           ? this.appendProviderTried(item, plan.providerId)
           : item.providerTried;
-        if (fallbackFromStockSdk) {
+        if (fallbackFromStockSdk || fallbackFromMassive) {
           await db.marketWorkItems.update(itemId, {
             status: 'pending',
             attemptCount: 0,
             nextRetryAt: undefined,
             providerTried,
-            lastError: 'stock-sdk 未返回可用历史数据，正在尝试下一个行情源。',
+            lastError: `${plan.providerId} 未返回可用历史数据，正在尝试下一个行情源。`,
             updatedAt: now,
           });
           continue;

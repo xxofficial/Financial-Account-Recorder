@@ -31,7 +31,7 @@ export default function DataPage() {
     { title: '数据备份', desc: '导出或恢复本地账本数据，可在设备间迁移。', icon: ArchiveRestore, path: '/data/backup' },
     { title: '历史行情', desc: '查看、导入、导出和补齐历史行情数据。', icon: Database, path: '/data/cache' },
     { title: '电子结单导入', desc: '导入已适配的 CSV 交易记录或文本型 PDF 结单。', icon: FileText, path: '/data/imports' },
-    { title: '期权到期处理', desc: '扫描过期未平仓期权，确认后批量记账。', icon: ShieldAlert, path: '/data/corporate-actions' },
+    { title: '公司行动', desc: '同步并确认股票拆并股，处理到期期权。', icon: ShieldAlert, path: '/data/corporate-actions' },
   ];
 
   return <div className="page tab-page data-page">

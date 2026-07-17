@@ -86,6 +86,23 @@ describe('chartDataUtils', () => {
     expect(chartBars[0].low).toBe(100);
   });
 
+  it('should normalize raw prices and volume across a forward split', () => {
+    const bars = [
+      makeBar({ tradeDate: '2026-06-02', open: 80, high: 88, low: 72, close: 80, volume: 100 }),
+      makeBar({ tradeDate: '2026-06-03', open: 10, high: 11, low: 9, close: 10, volume: 800 }),
+    ];
+    const split = makeTx({ tradeType: 'SPLIT', symbol: 'SNXX', tradeDate: '2026-06-03', price: 8 });
+    const chartBars = historicalBarsToChartBars(bars, [split]);
+    expect(chartBars[0]).toMatchObject({ open: 10, high: 11, low: 9, close: 10, volume: 800 });
+    expect(chartBars[1]).toMatchObject({ open: 10, high: 11, low: 9, close: 10, volume: 800 });
+  });
+
+  it('should not normalize bars already marked split-adjusted', () => {
+    const bar = makeBar({ tradeDate: '2026-06-02', close: 80, adjustmentMode: 'split_adjusted' });
+    const split = makeTx({ tradeType: 'SPLIT', tradeDate: '2026-06-03', price: 8 });
+    expect(historicalBarsToChartBars([bar], [split])[0].close).toBe(80);
+  });
+
   it('should filter bars by range', () => {
     const today = new Date().toISOString().split('T')[0];
     const yesterday = new Date(Date.now() - 86400000).toISOString().split('T')[0];
@@ -173,5 +190,10 @@ describe('chartDataUtils', () => {
     expect(markers).toHaveLength(1);
     expect(markers[0].time).toBe('2024-01-03');
     expect(markers[0].text).toBe('B');
+  });
+
+  it('should show a dedicated split marker', () => {
+    const markers = buildTradeMarkers([makeTx({ tradeType: 'SPLIT', tradeDate: '2026-06-03', price: 8 })]);
+    expect(markers).toEqual([{ time: '2026-06-03', position: 'aboveBar', color: '#6366f1', text: '拆' }]);
   });
 });

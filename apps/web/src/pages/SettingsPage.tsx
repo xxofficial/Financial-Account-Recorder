@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Check, ChevronRight, Database, Key, ShieldAlert, TrendingDown, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
 import { MarketDataAppProvider } from '../core/market/marketDataProvider';
+import { MassiveProvider } from '../core/market/massiveProvider';
 import { isAndroidNativeRuntime, nativeSecret, nativeSecretKeyForProvider, nativeSecretPlaceholder } from '../platform/nativeRuntime';
 import AndroidEmailSyncCard from '../components/AndroidEmailSyncCard';
 import AppUpdateCard from '../components/AppUpdateCard';
@@ -24,15 +25,19 @@ export default function SettingsPage() {
   const [marketdataKey, setMarketdataKey] = useState('');
   const [hasMarketdataSecret, setHasMarketdataSecret] = useState(false);
   const [connectionState, setConnectionState] = useState<'idle' | 'pending' | 'success' | 'failed'>('idle');
+  const [massiveEnabled, setMassiveEnabled] = useState(false);
+  const [massiveKey, setMassiveKey] = useState('');
+  const [massiveConnectionState, setMassiveConnectionState] = useState<'idle' | 'pending' | 'success' | 'failed'>('idle');
   const [storageUsage, setStorageUsage] = useState({ usage: 0, quota: 0 });
   const [isPersisted, setIsPersisted] = useState(false);
 
   useEffect(() => {
     void (async () => {
-      const [scheme, theme, afterImport, afterTransaction, dailyClose, marketdata] = await Promise.all([
+      const [scheme, theme, afterImport, afterTransaction, dailyClose, marketdata, massive] = await Promise.all([
         db.appSettings.get('candlestick_color_scheme'), db.appSettings.get('theme_preference'),
         db.appSettings.get('auto_sync_after_import'), db.appSettings.get('auto_sync_after_transaction'), db.appSettings.get('auto_sync_daily_close'),
         db.marketProviderConfigs.get('marketdata'),
+        db.marketProviderConfigs.get('massive'),
       ]);
       if (scheme && ['red_up', 'green_up'].includes(scheme.value)) setCandlestickColorScheme(scheme.value);
       if (theme && ['system', 'light', 'dark'].includes(theme.value)) setThemePreference(theme.value);
@@ -41,6 +46,10 @@ export default function SettingsPage() {
       setAutoSyncDailyClose(Boolean(dailyClose?.value ?? true));
       setMarketdataEnabled(marketdata?.enabled === 1);
       if (!isAndroid) setMarketdataKey(marketdata?.apiKey || '');
+      if (!isAndroid) {
+        setMassiveEnabled(massive?.enabled === 1);
+        setMassiveKey(massive?.apiKey || '');
+      }
       if (isAndroid) setHasMarketdataSecret((await nativeSecret.has({ key: nativeSecretKeyForProvider('marketdata') })).exists);
     })();
     void navigator.storage?.estimate?.().then(value => setStorageUsage({ usage: value.usage || 0, quota: value.quota || 0 }));
@@ -67,6 +76,7 @@ export default function SettingsPage() {
       db.appSettings.put({ key: 'auto_sync_daily_close', value: autoSyncDailyClose, updatedAt: now }),
       db.marketProviderConfigs.put({ provider: 'stock-sdk', enabled: 1, priority: 0, apiKey: '', baseUrl: 'stock-sdk', optionsJson: '{"keyless":true,"stockOnly":true}', createdAt: now, updatedAt: now }),
       db.marketProviderConfigs.put({ provider: 'marketdata', enabled: !isAndroid && marketdataEnabled ? 1 : 0, priority: 2, apiKey, baseUrl: 'https://api.marketdata.app/v1', optionsJson: '{"historicalFallback":true}', createdAt: now, updatedAt: now }),
+      db.marketProviderConfigs.put({ provider: 'massive', enabled: !isAndroid && massiveEnabled && Boolean(massiveKey.trim()) ? 1 : 0, priority: -1, apiKey: !isAndroid ? massiveKey.trim() : '', baseUrl: 'https://api.massive.com', optionsJson: '{"historicalPrimary":true,"corporateActions":true,"markets":["US"]}', createdAt: now, updatedAt: now }),
     ]);
     alert(isAndroid ? '设置已保存到系统安全存储。' : '设置已保存到本地。');
   };
@@ -77,6 +87,18 @@ export default function SettingsPage() {
     setConnectionState('pending');
     try { setConnectionState((await new MarketDataAppProvider().testConnection(key)).ok ? 'success' : 'failed'); }
     catch { setConnectionState('failed'); }
+  };
+
+  const testMassive = async () => {
+    const key = massiveKey.trim();
+    if (!key) return alert('请先输入 Massive 密钥。');
+    setMassiveConnectionState('pending');
+    try {
+      const result = await new MassiveProvider().testConnection(key);
+      setMassiveConnectionState(result.ok ? 'success' : 'failed');
+    } catch {
+      setMassiveConnectionState('failed');
+    }
   };
 
   const formatBytes = (bytes: number) => bytes < 1024 ? `${bytes} B` : `${(bytes / 1024 / 1024).toFixed(2)} MB`;
@@ -103,6 +125,7 @@ export default function SettingsPage() {
           <p className="text-xs text-muted">应用会优先使用默认行情服务；美股历史数据无法获取时，可尝试备用服务。短暂网络问题会自动重试，不会直接判为不支持。</p>
           <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><strong>默认行情服务</strong><span className="badge success" style={{ marginLeft: 8 }}>股票默认源</span><p className="text-xs text-muted">无需额外密钥；网页端会根据网络环境返回可用状态。</p></div>
           {!isAndroid && <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><div className="flex-between"><strong>备用美股行情服务</strong><label><input type="checkbox" checked={marketdataEnabled} onChange={e => setMarketdataEnabled(e.target.checked)} /> 用于美股历史数据和期权</label></div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><input type="password" value={marketdataKey} placeholder="输入备用服务密钥" onChange={e => setMarketdataKey(e.target.value)} /><button type="button" onClick={testMarketdata}>{connectionState === 'pending' ? '测试中…' : '测试连接'}</button></div><small className="text-muted">密钥仅保存于本机浏览器；连接失败时会按临时问题重试。</small>{connectionState !== 'idle' && <small className={connectionState === 'success' ? 'text-success' : 'text-muted'}>{connectionState === 'success' ? '连接成功' : '连接失败，请检查密钥或稍后重试'}</small>}</div>}
+          {!isAndroid && <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><div className="flex-between"><strong>Massive 美股行情服务</strong><label><input type="checkbox" checked={massiveEnabled} onChange={e => setMassiveEnabled(e.target.checked)} /> 用于美股历史行情和公司行动</label></div><p className="text-xs text-muted">Massive 优先提供美股股票/期权未复权日 K、证券资料和拆并股；当前套餐不支持实时快照，实时行情仍使用现有来源。密钥仅保存在当前浏览器，不会包含在备份或上传内容中。</p><div style={{ display: 'flex', gap: 8 }}><input type="password" value={massiveKey} placeholder="输入 Massive API 密钥" onChange={e => setMassiveKey(e.target.value)} /><button type="button" onClick={testMassive}>{massiveConnectionState === 'pending' ? '测试中…' : '测试连接'}</button></div>{massiveConnectionState !== 'idle' && <small className={massiveConnectionState === 'success' ? 'text-success' : 'text-muted'}>{massiveConnectionState === 'success' ? 'Massive 连接成功，可用于美股历史行情和公司行动' : '连接失败，请检查密钥、网络或浏览器访问权限'}</small>}</div>}
           {isAndroid && <p className="text-xs text-muted">移动端会使用系统提供的美股行情服务；此处无需配置备用服务。</p>}
         </div>
         <button type="submit" className="primary" style={{ alignSelf: 'flex-start' }}><Check size={16} /> 保存设置</button>

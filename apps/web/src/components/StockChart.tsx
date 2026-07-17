@@ -147,6 +147,7 @@ export default function StockChart({
     const markers = buildTradeMarkers(trades, {
       buyColor: '#22c55e',
       sellColor: '#ef4444',
+      splitColor: '#6366f1',
     }).map(
       (m): CustomTradeMarker => ({
         time: m.time as Time,

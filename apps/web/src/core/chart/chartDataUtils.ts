@@ -1,4 +1,5 @@
 import type { Transaction, HistoricalBar } from '../../db/schema';
+import { describeSplitFactor } from '../../shared/splitRatio';
 
 export type ChartBar = {
   time: string; // YYYY-MM-DD
@@ -72,7 +73,7 @@ export function computeMovingAverage(
   return result;
 }
 
-export function historicalBarsToChartBars(bars: HistoricalBar[]): ChartBar[] {
+export function historicalBarsToChartBars(bars: HistoricalBar[], splitTransactions: Transaction[] = []): ChartBar[] {
   return bars
     .filter((b) => b.resolution === '1d')
     .map((b) => {
@@ -80,13 +81,17 @@ export function historicalBarsToChartBars(bars: HistoricalBar[]): ChartBar[] {
       const close = b.close;
       const high = b.high ?? Math.max(open, close);
       const low = b.low ?? Math.min(open, close);
+      const splitFactor = splitTransactions
+        .filter((transaction) => transaction.tradeType === 'SPLIT' && transaction.tradeDate > b.tradeDate && transaction.price > 0)
+        .filter(() => b.adjustmentMode !== 'split_adjusted' && b.adjustedMode !== 'split_adjusted')
+        .reduce((factor, transaction) => factor * transaction.price, 1);
       return {
         time: formatTimeForChart(b.tradeDate),
-        open,
-        high,
-        low,
-        close,
-        volume: b.volume ?? 0,
+        open: open / splitFactor,
+        high: high / splitFactor,
+        low: low / splitFactor,
+        close: close / splitFactor,
+        volume: (b.volume ?? 0) * splitFactor,
       };
     })
     .sort((a, b) => a.time.localeCompare(b.time));
@@ -96,15 +101,16 @@ export interface TradeMarker {
   time: string;
   position: 'aboveBar' | 'belowBar';
   color: string;
-  text: 'B' | 'S';
+  text: string;
 }
 
 export function buildTradeMarkers(
   trades: Transaction[],
-  options?: { buyColor?: string; sellColor?: string }
+  options?: { buyColor?: string; sellColor?: string; splitColor?: string }
 ): TradeMarker[] {
   const buyColor = options?.buyColor ?? 'var(--color-success)';
   const sellColor = options?.sellColor ?? 'var(--color-error)';
+  const splitColor = options?.splitColor ?? '#6366f1';
   const markers: TradeMarker[] = [];
 
   // 按日期聚合交易
@@ -119,6 +125,20 @@ export function buildTradeMarkers(
   }
 
   for (const [date, dayTrades] of byDate) {
+    const splitKeys = new Set<string>();
+    for (const transaction of dayTrades.filter((item) => item.tradeType === 'SPLIT')) {
+      const display = describeSplitFactor(transaction.price);
+      const key = `${date}:${transaction.price}`;
+      if (splitKeys.has(key)) continue;
+      splitKeys.add(key);
+      markers.push({
+        time: date,
+        position: 'aboveBar',
+        color: splitColor,
+        text: display.direction === '拆股' ? '拆' : display.direction === '并股' ? '并' : '比',
+      });
+    }
+
     const buyQty = dayTrades
       .filter((t) => t.tradeType === 'BUY')
       .reduce((sum, t) => sum + t.quantity, 0);

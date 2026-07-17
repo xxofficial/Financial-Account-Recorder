@@ -107,7 +107,7 @@ export interface HistoricalDailyBar {
 }
 
 export interface MarketProviderConfig {
-  provider: 'stock-sdk' | 'marketdata' | 'android-default';
+  provider: 'stock-sdk' | 'marketdata' | 'massive' | 'android-default';
   enabled: number; // 1 = enabled, 0 = disabled (IndexedDB cannot index booleans)
   priority: number;
   apiKey: string;
