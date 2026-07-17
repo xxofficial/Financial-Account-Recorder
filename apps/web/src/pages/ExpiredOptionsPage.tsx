@@ -109,7 +109,7 @@ export default function ExpiredOptionsPage() {
       </>}
     </section>
     <section className="surface-card">
-      <div className="section-heading"><span><ShieldAlert size={18} />本地候选扫描</span><button type="button" className="icon-button" onClick={() => setAsOfDate(localDate())} aria-label="刷新扫描日期"><RefreshCw size={17} /></button></div>
+      <div className="section-heading"><span><ShieldAlert size={18} />期权到期处理</span><button type="button" className="icon-button" onClick={() => setAsOfDate(localDate())} aria-label="刷新扫描日期"><RefreshCw size={17} /></button></div>
       <p className="text-sm text-muted">只扫描已过期且仍有净仓位的期权，不会自动写入账本。请先确认没有行权或指派。</p>
       <label className="trade-form-field"><span className="trade-form-label">扫描截至日期</span><input type="date" value={asOfDate} onChange={(event) => { setAsOfDate(event.target.value); setSelected([]); }} /></label>
     </section>

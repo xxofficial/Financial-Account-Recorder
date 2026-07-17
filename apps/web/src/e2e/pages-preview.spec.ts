@@ -9,11 +9,10 @@ test('loads platform logos below the GitHub Pages project path', async ({ page }
 
   const logos = page.locator('aside.ledger-drawer img');
   await expect(logos).toHaveCount(8);
-  const state = await logos.evaluateAll((images) => images.map((image) => {
+  await expect.poll(async () => logos.evaluateAll((images) => images.every((image) => {
     const logo = image as HTMLImageElement;
-    return { src: logo.getAttribute('src'), complete: logo.complete, width: logo.naturalWidth };
-  }));
-  expect(state.every((image) => image.src?.startsWith('./platform_') && image.complete && image.width > 0)).toBe(true);
+    return logo.getAttribute('src')?.includes('/platform_') && logo.complete && logo.naturalWidth > 0;
+  }))).toBe(true);
 });
 
 test('keeps statement passwords in settings in the production Pages preview', async ({ page }) => {

@@ -16,6 +16,7 @@ import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import { cacheService } from '../core/market/marketDataCacheService';
 import { historicalBarsToChartBars, type ChartRange, type CandlestickColorScheme } from '../core/chart/chartDataUtils';
+import { describeSplitFactor } from '../shared/splitRatio';
 
 const calculator = new PortfolioCalculator();
 const defaultExchangeRates: ExchangeRates = { usdToCny: 7.20, hkdToCny: 0.92 };
@@ -186,11 +187,13 @@ export default function StockDetailPage() {
     };
   }, [activeTab, historicalBars, quotes, rangeBounds.fromDate, rangeBounds.toDate, securityTxns, targetMarket, targetSymbol]);
 
-  const { chartBars, stockTrades, hasChartData } = useMemo(() => {
+  const { chartBars, stockTrades, splitTransactions, hasChartData, hasSplitAdjustment } = useMemo(() => {
     const bars = historicalBars.filter((bar) => bar.resolution === '1d');
     const filteredBars = bars.filter((bar) => bar.tradeDate >= rangeBounds.fromDate && bar.tradeDate <= rangeBounds.toDate);
     const stockTrades = securityTxns.filter((tx) => tx.assetType !== 'OPTION' && tx.tradeDate >= rangeBounds.fromDate && tx.tradeDate <= rangeBounds.toDate);
-    return { chartBars: historicalBarsToChartBars(filteredBars), stockTrades, hasChartData: filteredBars.length > 0 };
+    const splitTransactions = securityTxns.filter((tx) => tx.assetType !== 'OPTION' && tx.tradeType === 'SPLIT');
+    const hasSplitAdjustment = splitTransactions.some((tx) => tx.price > 0 && bars.some((bar) => bar.tradeDate < tx.tradeDate));
+    return { chartBars: historicalBarsToChartBars(bars, splitTransactions), stockTrades, splitTransactions, hasChartData: filteredBars.length > 0, hasSplitAdjustment };
   }, [historicalBars, rangeBounds.fromDate, rangeBounds.toDate, securityTxns]);
 
   const handleFetchMarketData = async () => {
@@ -219,7 +222,7 @@ export default function StockDetailPage() {
 
     {activeTab === 'STOCK' && <section className="stock-detail-card stock-detail-kline-card">
       <div className="stock-detail-card-title"><TrendingUp size={16} /><span>日 K 线走势</span></div>
-      {hasChartData ? <StockChart bars={chartBars} trades={stockTrades} timeRange={range === 'CUSTOM' ? 'ALL' : range as ChartRange} colorScheme={colorScheme} height={300} /> : <div className="stock-detail-kline-empty">暂无该范围内的日 K 线数据<br /><span>请按需补齐当前时间范围的历史行情。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}{hasAnyKline ? '补齐日 K 线' : '获取行情'}</button></div>}
+      {hasChartData ? <><StockChart bars={chartBars} trades={stockTrades} timeRange={range === 'CUSTOM' ? 'ALL' : range as ChartRange} colorScheme={colorScheme} height={300} />{hasSplitAdjustment && <div className="stock-detail-kline-adjustment">K 线已按已确认拆并股前复权：{splitTransactions.map((tx) => <span key={`${tx.id}-${tx.tradeDate}-${tx.price}`}>{describeSplitFactor(tx.price).label}（{tx.tradeDate}）</span>)}</div>}</> : <div className="stock-detail-kline-empty">暂无该范围内的日 K 线数据<br /><span>请按需补齐当前时间范围的历史行情。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}{hasAnyKline ? '补齐日 K 线' : '获取行情'}</button></div>}
       {needsKlineFill && hasChartData && <div className="stock-detail-kline-fill"><span>当前时间范围内日 K 线不完整，可按需补齐。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}补齐日 K 线</button></div>}
     </section>}
 
@@ -229,6 +232,15 @@ export default function StockDetailPage() {
 
     <section className="stock-detail-card stock-detail-breakdown-card"><div className="stock-detail-card-title"><Info size={16} /><span>盈亏构成</span></div><div className="stock-detail-lines"><div className="stock-detail-line"><span>期初持仓市值</span><b>{nativeAmount(stats.openingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>期末持仓市值</span><b>{nativeAmount(stats.closingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计入账金额<small>股票/期权卖出</small></span><b className="profit">{nativeAmount(stats.sellProceeds, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计出账金额<small>股票/期权买入</small></span><b className="loss">-{nativeAmount(stats.buyCost, displayCurrency)}</b></div><div className="stock-detail-line"><span>费用合计<small>佣金及交易税费</small></span><b className="loss">-{nativeAmount(stats.fees, displayCurrency)}</b></div><div className="stock-detail-line"><span>其他现金调整<small>分红、利息、独立税费及其他</small></span><b className={stats.cashAdjustments >= 0 ? 'profit' : 'loss'}>{signed(stats.cashAdjustments, displayCurrency)}</b></div><div className="stock-detail-divider" /><div className="stock-detail-line stock-detail-total"><span>盈亏合计</span><b className={selectedPnl >= 0 ? 'profit' : 'loss'}>{signed(selectedPnl, displayCurrency)}</b></div></div><p className="stock-detail-formula">盈亏合计 = 期末市值 − 期初市值 + 卖出 − 买入 − 费用 + 其他现金调整</p></section>
 
-    <section className="stock-detail-card stock-detail-transactions-card"><div className="stock-detail-card-title"><FileText size={16} /><span>流水明细</span><small>共 {stats.txnsList.length} 笔</small></div>{stats.txnsList.length === 0 ? <div className="stock-detail-empty">当前区间内没有交易记录</div> : <div className="stock-detail-transactions">{stats.txnsList.map((tx) => { const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN'; const value = txAmount(tx, displayCurrency); return <div className="stock-detail-transaction" key={tx.id}><div><span className={`badge ${isBuy ? 'success' : 'error'}`}>{TradeTypeLabels[tx.tradeType] || tx.tradeType}</span><b>{tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {amount(convertToCny(tx.price, tx.market, defaultExchangeRates), displayCurrency)}</b></div><strong className={isBuy ? 'loss' : 'profit'}>{isBuy ? '-' : '+'}{displayCurrency.symbol}{value.toFixed(2)}</strong><small><Calendar size={12} />{tx.tradeDate} {tx.tradeTime} <span>费用 {amount(convertToCny(tx.commission + tx.tax, tx.market, defaultExchangeRates), displayCurrency)}</span></small></div>; })}</div>}</section>
+    <section className="stock-detail-card stock-detail-transactions-card"><div className="stock-detail-card-title"><FileText size={16} /><span>流水明细</span><small>共 {stats.txnsList.length} 笔</small></div>{stats.txnsList.length === 0 ? <div className="stock-detail-empty">当前区间内没有交易记录</div> : <div className="stock-detail-transactions">{stats.txnsList.map((tx) => {
+      if (tx.tradeType === 'SPLIT') {
+        const split = describeSplitFactor(tx.price);
+        const isForward = split.direction === '拆股';
+        return <div className="stock-detail-corporate-action" key={tx.id}><div className="stock-detail-corporate-action-heading"><span className="badge corporate-action">公司行动</span><b>{split.direction}</b></div><strong>{split.ratio}</strong><p>{isForward ? `持仓数量 ×${tx.price}，平均成本 ÷${tx.price}` : `持仓数量 ÷${1 / tx.price}，平均成本 ×${1 / tx.price}`}</p><small><Calendar size={12} />生效日 {tx.tradeDate}</small></div>;
+      }
+      const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN';
+      const value = txAmount(tx, displayCurrency);
+      return <div className="stock-detail-transaction" key={tx.id}><div><span className={`badge ${isBuy ? 'success' : 'error'}`}>{TradeTypeLabels[tx.tradeType] || tx.tradeType}</span><b>{tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {amount(convertToCny(tx.price, tx.market, defaultExchangeRates), displayCurrency)}</b></div><strong className={isBuy ? 'loss' : 'profit'}>{isBuy ? '-' : '+'}{displayCurrency.symbol}{value.toFixed(2)}</strong><small><Calendar size={12} />{tx.tradeDate} {tx.tradeTime} <span>费用 {amount(convertToCny(tx.commission + tx.tax, tx.market, defaultExchangeRates), displayCurrency)}</span></small></div>;
+    })}</div>}</section>
   </div>;
 }

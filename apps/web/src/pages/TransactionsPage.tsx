@@ -17,6 +17,7 @@ import { AdaptiveSingleLineText } from '../components/AdaptiveSingleLineText';
 import { getTransferPairByTransactionId } from '../core/transfers/transferService';
 import { userFacingError } from '../shared/userMessages';
 import { backupService } from '../core/backup/backupService';
+import { describeSplitFactor } from '../shared/splitRatio';
 import type { Transaction, Ledger } from '../db/schema';
 import type { ReactNode } from 'react';
 
@@ -356,10 +357,12 @@ export default function TransactionsPage() {
           const negative = amount < 0;
           const type = tradeType(tx);
           const platform = (tx.platform in BrokerPlatform ? tx.platform : 'UNSPECIFIED') as PlatformType;
+          const splitDisplay = type === 'SPLIT' ? describeSplitFactor(tx.price) : undefined;
+          const typeLabel = splitDisplay?.direction ?? (tx.assetType === 'OPTION' && (type === 'BUY' || type === 'SELL') ? `期权${TradeTypeLabels[type]}` : isIpo(tx) ? '新股' : TradeTypeLabels[type]);
           return <LongPressButton className={`transaction-row-card ${selectedIds.has(id) ? 'selected' : ''}`} key={id} onClick={() => showBatchMode ? toggleSelection(id) : navigate(`/transactions/${id}`)} onLongPress={() => { if (!showBatchMode) setShowBatchMode(true); toggleSelection(id); }}>
-            <span className="transaction-row-top"><PlatformMark platform={platform} className="transaction-platform-mark" /><span className={`transaction-type-badge ${positive ? 'positive' : negative ? 'negative' : 'neutral'}`}>{tx.assetType === 'OPTION' && (type === 'BUY' || type === 'SELL') ? `期权${TradeTypeLabels[type]}` : isIpo(tx) ? '新股' : TradeTypeLabels[type]}</span><span className="transaction-row-market">{Market[(tx.market in Market ? tx.market : 'CASH') as MarketType].label}</span><strong className={positive ? 'positive' : negative ? 'negative' : ''}>{type === 'FX_CONVERSION' ? '换汇' : type === 'SPLIT' ? '--' : formatAmount(amount, tx.market)}</strong></span>
-            <span className="transaction-row-meta"><span className="transaction-row-identity">{tx.symbol && tx.symbol !== 'CASH' && <span className="transaction-row-symbol">{tx.symbol}</span>}<AdaptiveSingleLineText text={titleFor(tx)} className="transaction-row-title" maxFontSize={15} /></span><span className="transaction-row-time">{tx.tradeTime?.slice(0, 5)}</span></span>
-            {detailsFor(tx).length > 0 && <span className="transaction-row-details">{detailsFor(tx).join(' · ')}</span>}
+            <span className="transaction-row-top"><PlatformMark platform={platform} className="transaction-platform-mark" /><span className={`transaction-type-badge ${positive ? 'positive' : negative ? 'negative' : 'neutral'}`}>{typeLabel}</span><span className="transaction-row-market">{Market[(tx.market in Market ? tx.market : 'CASH') as MarketType].label}</span><strong className={positive ? 'positive' : negative ? 'negative' : ''}>{splitDisplay?.ratio ?? (type === 'FX_CONVERSION' ? '换汇' : formatAmount(amount, tx.market))}</strong></span>
+            <span className="transaction-row-meta"><span className="transaction-row-identity">{tx.symbol && tx.symbol !== 'CASH' && <span className="transaction-row-symbol">{tx.symbol}</span>}<AdaptiveSingleLineText text={titleFor(tx)} className="transaction-row-title" maxFontSize={15} /></span>{type !== 'SPLIT' && <span className="transaction-row-time">{tx.tradeTime?.slice(0, 5)}</span>}</span>
+            {type !== 'SPLIT' && detailsFor(tx).length > 0 && <span className="transaction-row-details">{detailsFor(tx).join(' · ')}</span>}
             {showBatchMode && <span className={`transaction-checkbox ${selectedIds.has(id) ? 'checked' : ''}`}>{selectedIds.has(id) && <Check size={13} />}</span>}
           </LongPressButton>;
         })}</div>

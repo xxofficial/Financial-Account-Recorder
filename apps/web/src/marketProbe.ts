@@ -59,6 +59,36 @@ export interface StockSdkOptionsPwaReport {
   capabilities: Partial<Record<StockSdkOptionCapability, MarketProbeResult>>;
 }
 
+export type MassiveProbeCapability =
+  | 'metadata.us'
+  | 'quote.us.snapshot'
+  | 'history.us.raw'
+  | 'split.us'
+  | 'dividend.us'
+  | 'calendar.us'
+  | 'option.us.contracts'
+  | 'option.us.history'
+  | 'option.us.snapshot';
+
+export type MassiveProbeStatus = 'success' | 'unsupported' | 'empty_data' | 'invalid_data' | 'network_error' | 'cors_error' | 'http_error';
+
+export interface MassiveProbeResult {
+  runtime: 'pwa';
+  capability: MassiveProbeCapability;
+  status: MassiveProbeStatus;
+  ok: boolean;
+  httpStatus?: number;
+  sampleCount?: number;
+  message?: string;
+  checkedAt: string;
+}
+
+export interface MassivePwaReport {
+  runtime: 'pwa';
+  checkedAt: string;
+  capabilities: Partial<Record<MassiveProbeCapability, MassiveProbeResult>>;
+}
+
 const RANGE = {
   startDate: '20260622',
   endDate: '20260713',
@@ -276,14 +306,99 @@ export async function runStockSdkOptionsPwaProbe(): Promise<StockSdkOptionsPwaRe
   return { runtime: 'pwa', sdkVersion: '2.4.0', checkedAt, capabilities };
 }
 
+const MASSIVE_PROBE_CONTRACT = 'O:AAPL260717C00110000';
+
+function massiveResult(capability: MassiveProbeCapability, status: MassiveProbeStatus, extra: Partial<MassiveProbeResult> = {}): MassiveProbeResult {
+  return { runtime: 'pwa', capability, status, ok: status === 'success', checkedAt: new Date().toISOString(), ...extra };
+}
+
+async function massiveJson(apiKey: string, path: string): Promise<{ status: number; body: any }> {
+  let response: Response;
+  try {
+    response = await fetch(`https://api.massive.com${path}`, { headers: { Accept: 'application/json', Authorization: `Bearer ${apiKey}` } });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(message.toLowerCase().includes('cors') ? 'cors_error' : 'network_error');
+  }
+  let body: any = null;
+  try { body = await response.json(); } catch { /* status-only responses remain classifiable */ }
+  return { status: response.status, body };
+}
+
+function validateMassiveBars(body: any): number {
+  const rows = body?.results;
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('empty_data');
+  for (const row of rows) {
+    if (![row?.o, row?.h, row?.l, row?.c].every(finitePositive) || row.l > row.o || row.l > row.c || row.h < row.o || row.h < row.c) throw new Error('invalid_data');
+  }
+  return rows.length;
+}
+
+/** Local-only probe; the key is never returned, logged, or persisted. */
+export async function runMassivePwaProbe(apiKey: string): Promise<MassivePwaReport> {
+  if (!apiKey.trim()) throw new Error('Massive API key is required');
+  const capabilities: Partial<Record<MassiveProbeCapability, MassiveProbeResult>> = {};
+  const run = async (capability: MassiveProbeCapability, path: string, validate: (body: any) => number | undefined, expectUnsupported = false) => {
+    try {
+      const response = await massiveJson(apiKey.trim(), path);
+      if (expectUnsupported && (response.status === 401 || response.status === 403)) {
+        capabilities[capability] = massiveResult(capability, 'unsupported', { httpStatus: response.status, message: '当前订阅不支持此端点' });
+        return;
+      }
+      if (response.status < 200 || response.status >= 300) throw new Error(`http_${response.status}`);
+      const sampleCount = validate(response.body);
+      capabilities[capability] = massiveResult(capability, 'success', { httpStatus: response.status, sampleCount });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const status: MassiveProbeStatus = message === 'empty_data' ? 'empty_data' : message === 'invalid_data' ? 'invalid_data' : message === 'cors_error' ? 'cors_error' : message === 'network_error' ? 'network_error' : 'http_error';
+      capabilities[capability] = massiveResult(capability, status, { message });
+    }
+  };
+
+  await run('metadata.us', '/v3/reference/tickers/AAPL', body => {
+    if (body?.status !== 'OK' || body?.results?.ticker !== 'AAPL' || !body?.results?.name) throw new Error('invalid_data');
+    return 1;
+  });
+  await run('quote.us.snapshot', '/v2/snapshot/locale/us/markets/stocks/tickers/AAPL', body => {
+    if (!body?.ticker && !body?.status) throw new Error('invalid_data');
+    return 1;
+  }, true);
+  await run('history.us.raw', '/v2/aggs/ticker/AAPL/range/1/day/2026-06-01/2026-06-05?adjusted=false', validateMassiveBars);
+  await run('split.us', '/stocks/v1/splits?ticker=SNXX&limit=10', body => {
+    const rows = body?.results;
+    if (!Array.isArray(rows) || !rows.some((row: any) => row.ticker === 'SNXX' && row.execution_date === '2026-06-03' && Number(row.split_from) === 1 && Number(row.split_to) === 8)) throw new Error('invalid_data');
+    return rows.length;
+  });
+  await run('dividend.us', '/stocks/v1/dividends?ticker=AAPL&limit=1', body => {
+    if (!Array.isArray(body?.results) || !body.results[0]?.ticker || typeof body.results[0]?.cash_amount !== 'number') throw new Error('invalid_data');
+    return body.results.length;
+  });
+  await run('calendar.us', '/v1/marketstatus/now', body => {
+    if (typeof body?.market !== 'string' || !body?.exchanges || typeof body?.serverTime !== 'string') throw new Error('invalid_data');
+    return 1;
+  });
+  await run('option.us.contracts', '/v3/reference/options/contracts?underlying_ticker=AAPL&limit=1', body => {
+    if (!Array.isArray(body?.results) || !body.results[0]?.ticker || body.results[0]?.underlying_ticker !== 'AAPL') throw new Error('invalid_data');
+    return body.results.length;
+  });
+  await run('option.us.history', `/v2/aggs/ticker/${encodeURIComponent(MASSIVE_PROBE_CONTRACT)}/range/1/day/2026-07-14/2026-07-16?adjusted=false`, validateMassiveBars);
+  await run('option.us.snapshot', `/v3/snapshot/options/AAPL/${encodeURIComponent(MASSIVE_PROBE_CONTRACT)}`, body => {
+    if (!body?.results) throw new Error('invalid_data');
+    return 1;
+  }, true);
+  return { runtime: 'pwa', checkedAt: new Date().toISOString(), capabilities };
+}
+
 export function installStockSdkPwaProbe(): void {
   window.__RECORDER_STOCK_SDK_PWA_PROBE__ = runStockSdkPwaProbe;
   window.__RECORDER_STOCK_SDK_OPTIONS_PWA_PROBE__ = runStockSdkOptionsPwaProbe;
+  window.__RECORDER_MASSIVE_PWA_PROBE__ = runMassivePwaProbe;
 }
 
 declare global {
   interface Window {
     __RECORDER_STOCK_SDK_PWA_PROBE__?: (selectedCapabilities?: MarketProbeCapability[]) => Promise<MarketProbeReport>;
     __RECORDER_STOCK_SDK_OPTIONS_PWA_PROBE__?: () => Promise<StockSdkOptionsPwaReport>;
+    __RECORDER_MASSIVE_PWA_PROBE__?: (apiKey: string) => Promise<MassivePwaReport>;
   }
 }

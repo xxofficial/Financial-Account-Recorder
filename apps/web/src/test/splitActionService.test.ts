@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Transaction } from '../db/schema';
-import { applySplitCandidates, buildSplitCandidates, CORPORATE_ACTION_PENDING_SPLITS_KEY, dueCorporateActionMarkets, eligibleCorporateActionCycle, getPendingSplitEvents, parseYahooSplitEvents, ratioFromDividendDetail } from '../core/corporateActions/splitActionService';
+import { applySplitCandidates, buildSplitCandidates, CORPORATE_ACTION_PENDING_SPLITS_KEY, dueCorporateActionMarkets, eligibleCorporateActionCycle, getPendingSplitEvents, parseMassiveSplitEvents, parseYahooSplitEvents, ratioFromDividendDetail } from '../core/corporateActions/splitActionService';
 import { db } from '../db/localDb';
 
 function transaction(overrides: Partial<Transaction> = {}): Transaction {
@@ -61,6 +61,18 @@ describe('split corporate action service', () => {
     expect(events).toHaveLength(1);
     expect(events[0].ratio).toBe(2);
     expect(events[0].externalReference).toContain('corporate-split:yahoo-chart:US:AAPL');
+  });
+
+  it('parses Massive US split events, including SNXX 1-for-8 on its execution date', () => {
+    const events = parseMassiveSplitEvents({ results: [{ ticker: 'SNXX', execution_date: '2026-06-03', split_from: 1, split_to: 8, adjustment_type: 'forward_split', historical_adjustment_factor: 0.125 }] }, 'SNXX');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ market: 'US', symbol: 'SNXX', tradeDate: '2026-06-03', ratio: 8, source: 'massive-splits' });
+    expect(events[0].externalReference).toContain('corporate-split:massive-splits:US:SNXX:2026-06-03:8');
+  });
+
+  it('parses Massive reverse splits as a sub-unit multiplier', () => {
+    const [event] = parseMassiveSplitEvents({ results: [{ ticker: 'TEST', execution_date: '2026-01-02', split_from: 10, split_to: 1 }] }, 'TEST');
+    expect(event.ratio).toBe(0.1);
   });
 
   it('builds per-platform candidates and writes them idempotently', async () => {

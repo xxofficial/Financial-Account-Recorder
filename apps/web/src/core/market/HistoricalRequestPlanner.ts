@@ -43,6 +43,20 @@ export interface HistoricalRequestPlan {
 
 export const INITIAL_CAPABILITIES: ProviderCapability[] = [
   {
+    providerId: 'massive',
+    supportsRealtimeQuotes: false,
+    supportsHistorical: true,
+    supportsSymbolRange: true,
+    supportsMultiSymbolSameRange: false,
+    supportsMultiSymbolSameDate: false,
+    supportsRecentLimit: true,
+    supportsAssetTypes: ['stock', 'option'],
+    supportsMarkets: ['US'],
+    maxSymbolsPerRequest: 1,
+    costModel: 'provider_specific',
+    quotaDetection: 'response_headers',
+  },
+  {
     providerId: 'stock-sdk',
     supportsRealtimeQuotes: true,
     supportsHistorical: true,
@@ -133,7 +147,12 @@ export class HistoricalRequestPlanner {
         return { config: c, capability, quota };
       })
       .filter(p => p.capability !== undefined)
-      .sort((a, b) => a.config.priority - b.config.priority);
+      .sort((a, b) => {
+        // Massive is the Web US historical primary. It does not advertise
+        // realtime quotes, so this ordering cannot displace stock-sdk there.
+        const effectivePriority = (provider: string, priority: number) => provider === 'massive' ? priority - 1 : priority;
+        return effectivePriority(a.config.provider, a.config.priority) - effectivePriority(b.config.provider, b.config.priority);
+      });
 
     for (const p of activeProviders) {
       const cap = p.capability!;

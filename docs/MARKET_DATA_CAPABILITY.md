@@ -2,7 +2,7 @@
 
 本文记录本地行情适配器及 `stock-sdk` 的实际验证结果与当前路由。它不是供应商能力声明，也不代表任何未列明环境、账户权限或发布版本已经可用。
 
-2026-07-14 已将 `stock-sdk@2.4.0` 正式设为 A／港／美**股票**（快照及不复权日 K）的唯一 provider；iTick 和 Twelve Data 已从应用代码、设置、配置和本地密钥管理移除。历史行情缓存与请求日志保留，不因迁移重同步。美股个股期权仍分端路由：Web 使用 MarketData.app，Android 使用 Yahoo（含 chart 元数据回退）。stock-sdk 的境内期权能力仍只用于探针和本文档，绝不接入美股个股期权账本。
+2026-07-14 已将 `stock-sdk@2.4.0` 设为 A／港／美股票实时源；Massive 现作为 Web 美股股票/个股期权未复权日 K及公司行动主源，stock-sdk 与 MarketData.app 按能力回退。iTick 和 Twelve Data 已从应用代码、设置、配置和本地密钥管理移除。Android 仍使用原生行情链路。
 
 ## 测试范围与判定
 
@@ -22,8 +22,27 @@
 | Twelve Data（已移除） | 历史本地 Key / 当前套餐 | 失败：套餐拒绝 | 失败：Pro 套餐限制 | 通过：AAPL | 失败 | 失败 | 通过 | 未测 | 仅保留历史验证结论；不再注册、配置或回退 |
 | MarketData.app | 本地 Key；**仅 Web `option.us`** | 不适用 | 不适用 | 不适用（已禁用股票路由） | 不适用 | 不适用 | 不适用（已禁用股票路由） | **通过**：AAPL 个股期权快照及日 K，HTTP 203 且 `s=ok` | Web 期权唯一正式源；不作为股票回退 |
 | stock-sdk 2.4.0 | 无 Key；股票唯一正式 provider | **通过**：600519、000858 | **通过**：07709 | **通过**：AAPL、SPY、QQQ | **通过**：600519，未复权 | **通过**：07709，未复权 | **通过**：AAPL、SPY、QQQ 各 15 根 | 不适用 | PWA 仍需按单次 CORS 失败显示失败且保留缓存；Android 经 NativeMarket |
+| Massive Stocks API | 本机 Key；Web 美股历史主源及公司行动 | 不适用 | 不适用 | **套餐限制**：快照 403 | 不适用 | 不适用 | **通过**：AAPL 未复权日 K | 个股期权日 K通过；实时快照套餐限制 | 美股历史主源；stock-sdk/MarketData.app 作为回退 |
 
 “通过”仅对应上述代表性标的、测试日期和当前权限；它不是同市场全部证券的覆盖承诺。iTick 及 Twelve Data 的 `option.us` 未在本轮验证，不能据此作为期权候选源。
+
+## Massive 扩展能力（PWA 实测）
+
+2026-07-17 使用本机密钥在 PWA 可访问的 API 请求上验证。报告只保存状态和样本数量，不保存密钥、请求 URL 或原始响应。
+
+| 能力 | 当前端点 | 代表性输入 | 实测结果 | 当前产品结论 |
+| --- | --- | --- | --- | --- |
+| `metadata.us` | `/v3/reference/tickers/{ticker}` | AAPL | **通过**：返回代码、正式名称、市场、交易所、币种等资料 | 作为美股证券名称候选来源 |
+| `history.us.raw` | `/v2/aggs/ticker/{ticker}/range/...` | AAPL，2026-06-01 至 2026-06-05，`adjusted=false` | **通过**：5 根，OHLC 与日期有效 | Web 美股股票历史主源 |
+| `split.us` | `/stocks/v1/splits` | SNXX | **通过**：2026-06-03，`1 → 8`；当前端点已替代弃用的 `/v3/reference/splits` | Massive 当前正式用途 |
+| `dividend.us` | `/stocks/v1/dividends` | AAPL | **通过**：返回除息日、派息日、金额、频率和调整因子 | 可作为分红资料候选；暂不自动导入分红流水 |
+| `calendar.us` | `/v1/marketstatus/now`、`/v1/marketstatus/upcoming` | 当前市场状态与未来休市日 | **通过**：返回市场状态、交易所状态、服务器时间及休市日列表 | 可作为交易日历候选；暂不替代现有日历源 |
+| `option.us.contracts` | `/v3/reference/options/contracts` | AAPL，limit=1 | **通过**：返回期权代码、看涨/看跌、到期日、行权价、合约乘数等 | 作为期权历史任务的合约资料来源 |
+| `option.us.history` | `/v2/aggs/ticker/{optionTicker}/range/...` | AAPL 期权合约，2026-07-14 至 2026-07-16 | **通过**：返回有效期权 OHLC 日 K | Web 个股期权历史主源，MarketData.app 回退 |
+| `quote.us.snapshot` | `/v2/snapshot/locale/us/markets/stocks/tickers/{ticker}` | AAPL | **套餐限制**：403 | 不纳入当前实时行情路由 |
+| `option.us.snapshot` | `/v3/snapshot/options/{underlying}/{contract}` | AAPL 期权合约 | **套餐限制**：403 | 不纳入当前实时期权路由 |
+
+Massive 的历史日 K响应包含 `o/h/l/c/v/vw/t`，可映射到本地未复权日 K缓存；公司行动响应包含 `execution_date`、`split_from`、`split_to` 和调整因子。API 对 `http://127.0.0.1:4173` 返回允许来源，PWA 请求可跨域访问。快照 403 是当前套餐权限结果，不应归类为 CORS 或网络故障。
 
 ### 修复后定向 PWA 重测
 
@@ -90,9 +109,9 @@ Twelve Data 港股格式化已改为四位纯数字代码（`7709.HK` → `7709`
 
 ## 当前正式路由
 
-- 股票 `quote.cn`／`quote.hk`／`quote.us`、`history.cn`／`history.hk`／`history.us`：仅 `stock-sdk`。日 K 始终显式传 `adjust: ''`，通过日期范围、非空和 OHLC 校验后以 `adjustmentMode: raw` 写入缓存；账本估值只读未复权价格。
-- Web 美股个股期权 `option.us`：仅 MarketData.app；Android 美股个股期权：仅 Yahoo（chart 元数据仅作为 Yahoo 自身的回退）。这两条均不承担股票。
-- 股票 stock-sdk 发生 CORS、空数组、解析异常、目标日期缺失或非法 OHLC 时，状态中心记录失败并生成可重试任务；不会写空数据、不会覆盖有效缓存，也不会秘密回退到 MarketData.app、iTick 或 Twelve Data。
+- 股票 `quote.cn`／`quote.hk`／`quote.us`：由 `stock-sdk` 提供实时行情；A／港股历史仍由 `stock-sdk` 提供。Web 美股股票 `history.us` 由 Massive 优先，stock-sdk 作为回退。所有日 K 始终使用未复权口径并写入 `adjustmentMode: raw`；账本估值只读未复权价格。
+- Web 美股个股期权历史 `option.us` 由 Massive 优先，MarketData.app 作为回退；期权实时行情仍由 MarketData.app。Android 美股个股期权继续使用 Yahoo/NativeMarket。
+- Massive、stock-sdk 和 MarketData.app 的确定性空数据、权限拒绝或不支持结果会记录已尝试来源并进入回退链；网络、超时和限流仍按来源退避重试。所有来源耗尽后才标记“暂不支持”。
 - 境内 ETF、指数、商品和中金所期权与美股个股期权分开建模；stock-sdk 的对应能力保持探针/文档用途。
 
 ## 运行方式与实装门槛

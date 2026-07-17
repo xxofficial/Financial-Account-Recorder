@@ -15,6 +15,7 @@
 | Twelve Data | Web / Android 可选 | 美股、港股、A 股等 | API Key | 用户配置的云端数据源 |
 | iTick | Web / Android 可选 | 美股、港股、A 股等 | API Key | 用户配置的云端数据源 |
 | MarketData.app | Web / Android 可选 | 美股股票和期权 | API Key | 用户配置的云端数据源 |
+| Massive Stocks API | Web | 美股证券资料、未复权日 K、公司行动、交易日历及部分期权资料 | API Key | 美股股票/期权历史主源；实时快照当前套餐不支持 |
 
 `android-default` 不是独立的网络服务名称，而是安卓端对 Tencent → Sina（股票）及 Yahoo（期权）的统一适配层。它经由原生 `NativeMarket` 网络插件发出请求，因此不受 WebView CORS 限制。
 

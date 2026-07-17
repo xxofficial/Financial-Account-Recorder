@@ -10,8 +10,11 @@ export default defineConfig({
     trace: 'on-first-retry',
   },
   projects: [
-    { name: 'mobile', testIgnore: /visual\.spec\.ts/, use: { ...devices['Pixel 5'] } },
-    { name: 'desktop', testIgnore: /visual\.spec\.ts/, use: { ...devices['Desktop Chrome'] } },
+    // PWA probes require the dedicated market-probe build/config. Keeping
+    // them out of the default app suite avoids running against a normal Vite
+    // bundle where the probe globals intentionally do not exist.
+    { name: 'mobile', testIgnore: [/visual\.spec\.ts/, /stock-sdk.*pwa\.spec\.ts/], use: { ...devices['Pixel 5'] } },
+    { name: 'desktop', testIgnore: [/visual\.spec\.ts/, /stock-sdk.*pwa\.spec\.ts/], use: { ...devices['Desktop Chrome'] } },
     { name: 'visual', testMatch: /visual\.spec\.ts/, use: { ...devices['Desktop Chrome'] } },
   ],
   webServer: {

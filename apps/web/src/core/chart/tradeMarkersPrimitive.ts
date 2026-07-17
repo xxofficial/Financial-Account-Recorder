@@ -12,7 +12,7 @@ import type { BitmapCoordinatesRenderingScope } from 'fancy-canvas';
 export interface CustomTradeMarker {
   time: Time;
   position: 'aboveBar' | 'belowBar';
-  text: 'B' | 'S';
+  text: string;
   color: string;
 }
 
