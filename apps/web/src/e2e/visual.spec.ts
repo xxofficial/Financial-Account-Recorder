@@ -76,6 +76,7 @@ for (const width of phoneWidths) {
     await page.getByRole('button', { name: /主题色/ }).click();
     await page.getByRole('dialog', { name: '选择主题色' }).getByRole('button', { name: /跟随系统/ }).click();
     await page.keyboard.press('Escape');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'system');
     await expect(page).toHaveScreenshot(`settings-${width}.png`, {
       animations: 'disabled',
       maxDiffPixelRatio: 0.05,
@@ -85,8 +86,8 @@ for (const width of phoneWidths) {
     await page.getByRole('button', { name: /卓锐证券/ }).click();
     await expect(page.getByText('费率方案')).toBeVisible();
     await expect(page.getByText('电子结单密码')).toBeVisible();
-    await page.getByText('高级与诊断').click();
-    await expect(page.getByText('行情 API 与直连优先级配置')).toBeVisible();
+    await page.getByText('行情与诊断').click();
+    await expect(page.getByText('Massive 美股行情服务')).toBeVisible();
     await expect(page).toHaveScreenshot(`settings-platform-advanced-${width}.png`, {
       animations: 'disabled',
       // Chinese fallback fonts differ slightly between Windows and the
