@@ -173,6 +173,15 @@ export async function requestWithLogging<T>(
         finalStatus = 'network_error';
         message = '网络已断开，请检查您的网络连接。';
         errorCode = 'NETWORK_DISCONNECTED';
+      } else if (provider === 'marketdata') {
+        // A static GitHub Pages build cannot read MarketData.app responses
+        // when the browser rejects the cross-origin request.  Chromium
+        // surfaces that rejection as the generic `Failed to fetch`, so keep
+        // it distinct from an offline failure and let the task executor end
+        // the item as an explicit "暂不支持" result.
+        finalStatus = 'cors_error';
+        message = 'MarketData.app 响应被浏览器跨域策略拦截。';
+        errorCode = 'CORS_ERROR';
       } else {
         finalStatus = 'network_error';
         message = '请求未能建立连接，可能是上游暂时不可达；将自动重试。';

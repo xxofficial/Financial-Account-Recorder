@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Mail, Plus, Save, Trash2 } from 'lucide-react';
 import { nativeEmailSync, type NativeEmailSyncConfig } from '../platform/nativeRuntime';
+import { userFacingError } from '../shared/userMessages';
 
 type Provider = NativeEmailSyncConfig['provider'];
 type FormState = Omit<NativeEmailSyncConfig, 'mailboxId' | 'passwordConfigured' | 'lastSyncAt' | 'lastStatus'>;
@@ -34,14 +35,14 @@ export default function AndroidEmailSyncCard() {
       const saved = await nativeEmailSync.configure({ ...form, mailboxId: editingId === 'new' ? undefined : editingId ?? undefined, password: password || undefined });
       await refresh(); setEditingId(saved.mailboxId); setForm(toForm(saved)); setPassword('');
       setMessage(saved.autoSync ? '配置已保存，后台同步最短每 15 分钟运行一次。' : '配置已保存；可在数据页手动同步。');
-    } catch (error) { setMessage(`保存失败：${error instanceof Error ? error.message : String(error)}`); }
+    } catch (error) { setMessage(`保存失败：${userFacingError(error, 'save')}`); }
     finally { setBusy(false); }
   };
   const remove = async (config: NativeEmailSyncConfig) => {
-    if (!window.confirm(`删除 ${maskedAccount(config.account)} 的邮箱配置？Android Keystore 中的密码也会删除。`)) return;
+    if (!window.confirm(`删除 ${maskedAccount(config.account)} 的邮箱配置？已保存的密码也会一并删除。`)) return;
     setBusy(true);
     try { await nativeEmailSync.remove({ mailboxId: config.mailboxId }); await refresh(); if (editingId === config.mailboxId) close(); }
-    catch (error) { setMessage(`删除失败：${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) { setMessage(`删除失败：${userFacingError(error, 'delete')}`); }
     finally { setBusy(false); }
   };
 

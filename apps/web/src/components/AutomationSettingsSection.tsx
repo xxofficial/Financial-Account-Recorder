@@ -3,9 +3,10 @@ import { CalendarDays, RefreshCw } from 'lucide-react';
 import { db } from '../db/localDb';
 import { getStockCalendarStatus, syncStockCalendar } from '../core/market/stockCalendarProvider';
 import { CORPORATE_ACTION_AUTO_SYNC_KEY, DEFAULT_CORPORATE_ACTION_AUTO_SYNC } from '../core/corporateActions/splitActionService';
+import { userFacingSyncDetail } from '../shared/userMessages';
 
 export default function AutomationSettingsSection() {
-  const [calendarStatus, setCalendarStatus] = useState<{ configured: boolean; fetchedAt?: number; lastError?: string; recordCount: number }>({ configured: false, recordCount: 0 });
+  const [calendarStatus, setCalendarStatus] = useState<{ configured: boolean; fetchedAt?: number; lastError?: string; lastWarning?: string; recordCount: number }>({ configured: false, recordCount: 0 });
   const [calendarSyncing, setCalendarSyncing] = useState(false);
   const [corporateActionAutoSync, setCorporateActionAutoSync] = useState(DEFAULT_CORPORATE_ACTION_AUTO_SYNC);
   const [message, setMessage] = useState('');
@@ -35,7 +36,11 @@ export default function AutomationSettingsSection() {
 
   const refreshCalendar = async () => {
     const cache = await syncCalendar(true);
-    setMessage(cache.lastError ? `交易日历同步未完成：${cache.lastError}` : '交易日历已刷新；后续只在缓存未覆盖最近交易日时增量更新。');
+    setMessage(cache.lastError
+      ? `交易日历暂未完成：${userFacingSyncDetail(cache.lastError)}。可稍后重试。`
+      : cache.lastWarning
+        ? `交易日历已刷新，但备用锚点已接管：${userFacingSyncDetail(cache.lastWarning)}。`
+        : '交易日历已刷新；后续只在缓存未覆盖最近交易日时增量更新。');
   };
 
   const saveCorporateActionAutoSync = async (enabled: boolean) => {
@@ -50,9 +55,9 @@ export default function AutomationSettingsSection() {
     <div className="settings-group-heading"><div><h2>自动同步</h2><p>这些设置作用于整个账本，不属于任何单一交易平台。</p></div></div>
     <div className="glass-card settings-platform-subsection settings-calendar-config">
       <h3><CalendarDays size={16} />交易日历自动同步</h3>
-      <p>港股和美股通过 stock-sdk 的公开日 K 线推断已结束交易日，A 股继续使用 stock-sdk。无需账号、Token 或额外配置。</p>
+      <p>应用会根据行情数据判断市场是否已结束交易日，无需账号或额外配置。</p>
       <div className="settings-inline-actions"><button type="button" className="primary settings-save-button" onClick={() => void refreshCalendar()} disabled={calendarSyncing}><RefreshCw size={15} className={calendarSyncing ? 'spin' : undefined} />{calendarSyncing ? '刷新中…' : '立即刷新'}</button></div>
-      <small>最近同步：{calendarUpdatedAt}；已缓存 {calendarStatus.recordCount} 个市场年度{calendarStatus.lastError ? `；最近一次提示：${calendarStatus.lastError}` : ''}</small>
+      <small>最近同步：{calendarUpdatedAt}；已缓存 {calendarStatus.recordCount} 个市场年度{calendarStatus.lastError ? `；状态：${userFacingSyncDetail(calendarStatus.lastError)}` : calendarStatus.lastWarning ? `；提示：${userFacingSyncDetail(calendarStatus.lastWarning)}` : ''}</small>
     </div>
     <div className="glass-card settings-platform-subsection settings-calendar-config">
       <h3>公司行动自动同步</h3>

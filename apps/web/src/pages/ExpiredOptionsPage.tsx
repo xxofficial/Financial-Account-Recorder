@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { db } from '../db/localDb';
 import { applyExpiredOptionCandidates, findExpiredOptionCandidates, type ExpiredOptionCandidate } from '../core/corporateActions/expiredOptionService';
 import { applySplitCandidates, buildSplitCandidates, getPendingSplitEvents, syncCorporateActionSplits } from '../core/corporateActions/splitActionService';
+import { userFacingError } from '../shared/userMessages';
 
 function localDate() {
   const now = new Date();
@@ -54,7 +55,7 @@ export default function ExpiredOptionsPage() {
       setSelected([]);
       setMessage(count ? `已创建 ${count} 条期权到期记录。` : '选中的候选项已处理，无需重复写入。');
     } catch (error) {
-      setMessage(`写入失败：${error instanceof Error ? error.message : String(error)}`);
+      setMessage(`写入失败：${userFacingError(error, 'save')}`);
     } finally {
       setApplying(false);
     }
@@ -69,7 +70,7 @@ export default function ExpiredOptionsPage() {
       setSelectedSplits([]);
       setMessage(result.failures.length ? `同步完成，但部分市场失败：${result.failures.join('；')}` : result.events.length ? `已同步 ${result.events.length} 条拆并股事件，请在下方确认候选。` : '同步完成，没有发现新的拆并股事件。');
     } catch (error) {
-      setMessage(`同步公司行动失败：${error instanceof Error ? error.message : String(error)}`);
+      setMessage(`同步公司行动失败：${userFacingError(error, 'sync')}`);
     } finally {
       setSyncingSplits(false);
     }
@@ -85,7 +86,7 @@ export default function ExpiredOptionsPage() {
       setSelectedSplits([]);
       setMessage(count ? `已创建 ${count} 条拆并股记录。` : '选中的拆并股候选项已处理，无需重复写入。');
     } catch (error) {
-      setMessage(`写入拆并股失败：${error instanceof Error ? error.message : String(error)}`);
+      setMessage(`写入拆并股失败：${userFacingError(error, 'save')}`);
     } finally {
       setApplying(false);
     }
@@ -95,7 +96,7 @@ export default function ExpiredOptionsPage() {
     <header className="secondary-page-header"><button type="button" className="icon-button" onClick={() => navigate('/data')} aria-label="返回数据"><ArrowLeft size={22} /></button><h1>公司行动</h1><span /></header>
     <section className="surface-card">
       <div className="section-heading"><span><CloudDownload size={18} />股票拆并股同步</span><button type="button" className="icon-button" onClick={() => void syncSplits()} disabled={syncingSplits || !stockSymbols.length} aria-label="同步拆并股"><RefreshCw size={17} className={syncingSplits ? 'spin' : undefined} /></button></div>
-      <p className="text-sm text-muted">A 股使用 stock-sdk 的东方财富送转数据；港股、美股使用 Yahoo Chart 的免费 splits 事件。同步只生成候选，不会自动改账本。</p>
+      <p className="text-sm text-muted">应用会从可用行情服务查询公司行动。同步只生成待确认候选，不会自动修改账本。</p>
       <button type="button" className="primary" onClick={() => void syncSplits()} disabled={syncingSplits || !stockSymbols.length}>{syncingSplits ? '同步中…' : stockSymbols.length ? `同步 ${stockSymbols.length} 个股票标的` : '当前账本没有股票标的'}</button>
       {splitCandidates.length > 0 && <>
         <section className="surface-list corporate-action-candidate-list">

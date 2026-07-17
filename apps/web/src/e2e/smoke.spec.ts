@@ -27,7 +27,7 @@ test('keeps a visited primary tab mounted while switching tabs', async ({ page }
 test('extracts a local text PDF statement through the browser importer', async ({ page }) => {
   test.skip(!existsSync(schwabStatementSample), 'Local statement samples are intentionally excluded from Git.');
   await page.goto('/#/data/imports');
-  await page.getByLabel('选择 PDF 结单').setInputFiles(schwabStatementSample);
+  await page.getByLabel('选择结单文件').setInputFiles(schwabStatementSample);
   await expect(page.getByText(/SCHWAB ·/).first()).toBeVisible({ timeout: 20_000 });
   await page.getByRole('button', { name: /确认导入/ }).click();
   await expect(page.getByText(/已导入|已忽略重复交易/).first()).toBeVisible();

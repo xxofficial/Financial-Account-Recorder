@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { ArchiveRestore, ChevronRight, Database, FileText, Inbox, Mail, RefreshCw, ShieldAlert } from 'lucide-react';
 import { isAndroidNativeRuntime, nativeEmailSync, type NativeEmailSyncConfig } from '../platform/nativeRuntime';
+import { userFacingError } from '../shared/userMessages';
 
 const maskedAccount = (account: string) => {
   const at = account.indexOf('@');
@@ -22,14 +23,14 @@ export default function DataPage() {
   const syncMailbox = async (mailbox: NativeEmailSyncConfig) => {
     setSyncing(mailbox.mailboxId); setMailMessage('');
     try { const result = await nativeEmailSync.syncNow({ mailboxId: mailbox.mailboxId }); setMailMessage(result.message); await refreshMailboxes(); }
-    catch (error) { setMailMessage(`同步失败：${error instanceof Error ? error.message : String(error)}`); }
+    catch (error) { setMailMessage(`同步失败：${userFacingError(error, 'sync')}`); }
     finally { setSyncing(''); }
   };
 
   const entries = [
-    { title: '数据备份', desc: '导出 v5 备份，导入旧 Android 或其他设备的数据。', icon: ArchiveRestore, path: '/data/backup' },
-    { title: '行情缓存', desc: '管理、导入、导出和补齐历史日 K 线缓存。', icon: Database, path: '/data/cache' },
-    { title: '电子结单导入', desc: '导入长桥、汇丰、uSMART 与嘉信的文本型电子结单。', icon: FileText, path: '/data/imports' },
+    { title: '数据备份', desc: '导出或恢复本地账本数据，可在设备间迁移。', icon: ArchiveRestore, path: '/data/backup' },
+    { title: '历史行情', desc: '查看、导入、导出和补齐历史行情数据。', icon: Database, path: '/data/cache' },
+    { title: '电子结单导入', desc: '导入已适配的 CSV 交易记录或文本型 PDF 结单。', icon: FileText, path: '/data/imports' },
     { title: '期权到期处理', desc: '扫描过期未平仓期权，确认后批量记账。', icon: ShieldAlert, path: '/data/corporate-actions' },
   ];
 

@@ -10,6 +10,7 @@ import { DisplayCurrency, TradeTypeLabels } from '../shared/models';
 import { type Transaction } from '../db/schema';
 import StockChart from '../components/StockChart';
 import { AdaptiveSingleLineText } from '../components/AdaptiveSingleLineText';
+import { userFacingError } from '../shared/userMessages';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
@@ -137,8 +138,13 @@ export default function StockDetailPage() {
     const stockClosingValue = (stockAfter?.quantity ?? 0) * endPrice;
     const stockBuy = stockRange.filter((tx) => tx.tradeType === 'BUY').reduce((sum, tx) => sum + tx.price * tx.quantity, 0);
     const stockSell = stockRange.filter((tx) => tx.tradeType === 'SELL').reduce((sum, tx) => sum + tx.price * tx.quantity, 0);
-    const stockFees = stockRange.reduce((sum, tx) => sum + Math.abs(tx.commission + tx.tax), 0);
-    const stockPnl = stockClosingValue - stockOpeningValue + stockSell - stockBuy - stockFees;
+    const stockFees = stockRange.filter((tx) => tx.tradeType === 'BUY' || tx.tradeType === 'SELL').reduce((sum, tx) => sum + Math.abs(tx.commission + tx.tax), 0);
+    const stockDividend = stockRange.filter((tx) => tx.tradeType === 'DIVIDEND').reduce((sum, tx) => sum + tx.price * tx.quantity - tx.tax, 0);
+    const stockInterest = stockRange.filter((tx) => tx.tradeType === 'INTEREST').reduce((sum, tx) => sum - Math.abs(tx.price * tx.quantity), 0);
+    const stockIndependentTax = stockRange.filter((tx) => tx.tradeType === 'TAX').reduce((sum, tx) => sum - Math.abs(tx.price * tx.quantity), 0);
+    const stockOther = stockRange.filter((tx) => tx.tradeType === 'OTHER').reduce((sum, tx) => sum + tx.price * tx.quantity, 0);
+    const stockCashAdjustments = stockDividend + stockInterest + stockIndependentTax + stockOther;
+    const stockPnl = stockClosingValue - stockOpeningValue + stockSell - stockBuy - stockFees + stockCashAdjustments;
     let optionOpeningValue = 0;
     let optionClosingValue = 0;
     let optionBuy = 0;
@@ -173,6 +179,8 @@ export default function StockDetailPage() {
       securityName: securityDetailName(targetSymbol, titleQuote?.name, stockTxns[0]?.name),
       stockPnl, optionPnl, totalPnl: stockPnl + optionPnl,
       buyCost, sellProceeds, fees, closingValue, stockOpeningValue, optionOpeningValue,
+      openingValue: activeTab === 'OPTION' ? optionOpeningValue : stockOpeningValue,
+      cashAdjustments: activeTab === 'OPTION' ? 0 : stockCashAdjustments,
       totalQuantity: activeTab === 'OPTION' ? optionRange.reduce((sum, tx) => sum + (tx.tradeType === 'BUY' ? tx.quantity : tx.tradeType === 'SELL' ? -tx.quantity : 0), 0) : (stockAfter?.quantity ?? 0),
       currentPrice: titleQuote?.currentPrice ?? endPrice, txnsList: sorted, hasOptions: optionTxns.length > 0,
     };
@@ -191,7 +199,7 @@ export default function StockDetailPage() {
       await marketCacheManager.queueHistoricalRangeForSecurity(targetSymbol, targetMarket, 'stock', rangeBounds);
       await MarketTaskExecutor.startOrWakeMarketExecutor();
     } catch (error: any) {
-      alert(`获取行情失败: ${error?.message || error}`);
+      alert(`获取行情失败：${userFacingError(error, 'sync')}`);
     } finally { setIsFetching(false); }
   };
 
@@ -211,7 +219,7 @@ export default function StockDetailPage() {
 
     {activeTab === 'STOCK' && <section className="stock-detail-card stock-detail-kline-card">
       <div className="stock-detail-card-title"><TrendingUp size={16} /><span>日 K 线走势</span></div>
-      {hasChartData ? <StockChart bars={chartBars} trades={stockTrades} timeRange={range === 'CUSTOM' ? 'ALL' : range as ChartRange} colorScheme={colorScheme} height={300} /> : <div className="stock-detail-kline-empty">暂无该范围内的日 K 线数据<br /><span>请确保已配置行情 API，然后按需补齐当前范围。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}{hasAnyKline ? '补齐日 K 线' : '获取行情'}</button></div>}
+      {hasChartData ? <StockChart bars={chartBars} trades={stockTrades} timeRange={range === 'CUSTOM' ? 'ALL' : range as ChartRange} colorScheme={colorScheme} height={300} /> : <div className="stock-detail-kline-empty">暂无该范围内的日 K 线数据<br /><span>请按需补齐当前时间范围的历史行情。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}{hasAnyKline ? '补齐日 K 线' : '获取行情'}</button></div>}
       {needsKlineFill && hasChartData && <div className="stock-detail-kline-fill"><span>当前时间范围内日 K 线不完整，可按需补齐。</span><button type="button" className="primary" onClick={handleFetchMarketData} disabled={isFetching}>{isFetching && <RefreshCw size={14} className="spin" />}补齐日 K 线</button></div>}
     </section>}
 
@@ -219,7 +227,7 @@ export default function StockDetailPage() {
 
     {stats.hasOptions && <div className="stock-detail-tabs"><button type="button" className={activeTab === 'STOCK' ? 'active' : ''} onClick={() => setActiveTab('STOCK')}>正股</button><button type="button" className={activeTab === 'OPTION' ? 'active' : ''} onClick={() => setActiveTab('OPTION')}>衍生品</button></div>}
 
-    <section className="stock-detail-card stock-detail-breakdown-card"><div className="stock-detail-card-title"><Info size={16} /><span>盈亏构成</span></div><div className="stock-detail-lines"><div className="stock-detail-line"><span>持仓市值</span><b>{nativeAmount(stats.closingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计入账金额<small>股票/期权卖出</small></span><b className="profit">{nativeAmount(stats.sellProceeds, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计出账金额<small>股票/期权买入</small></span><b className="loss">-{nativeAmount(stats.buyCost, displayCurrency)}</b></div><div className="stock-detail-line"><span>费用合计<small>佣金及税费</small></span><b className="loss">-{nativeAmount(stats.fees, displayCurrency)}</b></div><div className="stock-detail-divider" /><div className="stock-detail-line stock-detail-total"><span>盈亏合计</span><b className={selectedPnl >= 0 ? 'profit' : 'loss'}>{signed(selectedPnl, displayCurrency)}</b></div></div><p className="stock-detail-formula">盈亏合计 = 持仓市值 + 累计入账金额 − 累计出账金额 − 费用</p></section>
+    <section className="stock-detail-card stock-detail-breakdown-card"><div className="stock-detail-card-title"><Info size={16} /><span>盈亏构成</span></div><div className="stock-detail-lines"><div className="stock-detail-line"><span>期初持仓市值</span><b>{nativeAmount(stats.openingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>期末持仓市值</span><b>{nativeAmount(stats.closingValue, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计入账金额<small>股票/期权卖出</small></span><b className="profit">{nativeAmount(stats.sellProceeds, displayCurrency)}</b></div><div className="stock-detail-line"><span>累计出账金额<small>股票/期权买入</small></span><b className="loss">-{nativeAmount(stats.buyCost, displayCurrency)}</b></div><div className="stock-detail-line"><span>费用合计<small>佣金及交易税费</small></span><b className="loss">-{nativeAmount(stats.fees, displayCurrency)}</b></div><div className="stock-detail-line"><span>其他现金调整<small>分红、利息、独立税费及其他</small></span><b className={stats.cashAdjustments >= 0 ? 'profit' : 'loss'}>{signed(stats.cashAdjustments, displayCurrency)}</b></div><div className="stock-detail-divider" /><div className="stock-detail-line stock-detail-total"><span>盈亏合计</span><b className={selectedPnl >= 0 ? 'profit' : 'loss'}>{signed(selectedPnl, displayCurrency)}</b></div></div><p className="stock-detail-formula">盈亏合计 = 期末市值 − 期初市值 + 卖出 − 买入 − 费用 + 其他现金调整</p></section>
 
     <section className="stock-detail-card stock-detail-transactions-card"><div className="stock-detail-card-title"><FileText size={16} /><span>流水明细</span><small>共 {stats.txnsList.length} 笔</small></div>{stats.txnsList.length === 0 ? <div className="stock-detail-empty">当前区间内没有交易记录</div> : <div className="stock-detail-transactions">{stats.txnsList.map((tx) => { const isBuy = tx.tradeType === 'BUY' || tx.tradeType === 'DEPOSIT' || tx.tradeType === 'TRANSFER_IN'; const value = txAmount(tx, displayCurrency); return <div className="stock-detail-transaction" key={tx.id}><div><span className={`badge ${isBuy ? 'success' : 'error'}`}>{TradeTypeLabels[tx.tradeType] || tx.tradeType}</span><b>{tx.quantity} {tx.assetType === 'OPTION' ? '张' : '股'} @ {amount(convertToCny(tx.price, tx.market, defaultExchangeRates), displayCurrency)}</b></div><strong className={isBuy ? 'loss' : 'profit'}>{isBuy ? '-' : '+'}{displayCurrency.symbol}{value.toFixed(2)}</strong><small><Calendar size={12} />{tx.tradeDate} {tx.tradeTime} <span>费用 {amount(convertToCny(tx.commission + tx.tax, tx.market, defaultExchangeRates), displayCurrency)}</span></small></div>; })}</div>}</section>
   </div>;

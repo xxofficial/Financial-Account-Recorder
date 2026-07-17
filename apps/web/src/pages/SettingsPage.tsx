@@ -68,12 +68,12 @@ export default function SettingsPage() {
       db.marketProviderConfigs.put({ provider: 'stock-sdk', enabled: 1, priority: 0, apiKey: '', baseUrl: 'stock-sdk', optionsJson: '{"keyless":true,"stockOnly":true}', createdAt: now, updatedAt: now }),
       db.marketProviderConfigs.put({ provider: 'marketdata', enabled: !isAndroid && marketdataEnabled ? 1 : 0, priority: 2, apiKey, baseUrl: 'https://api.marketdata.app/v1', optionsJson: '{"historicalFallback":true}', createdAt: now, updatedAt: now }),
     ]);
-    alert(isAndroid ? '设置已保存；MarketData.app 密钥仅存入 Android Keystore。' : '设置已保存到本地。');
+    alert(isAndroid ? '设置已保存到系统安全存储。' : '设置已保存到本地。');
   };
 
   const testMarketdata = async () => {
     const key = marketdataKey.trim() || (isAndroid && hasMarketdataSecret ? nativeSecretPlaceholder('marketdata') : '');
-    if (!key) return alert('请先输入 MarketData.app Token。');
+    if (!key) return alert('请先输入备用服务密钥。');
     setConnectionState('pending');
     try { setConnectionState((await new MarketDataAppProvider().testConnection(key)).ok ? 'success' : 'failed'); }
     catch { setConnectionState('failed'); }
@@ -94,16 +94,16 @@ export default function SettingsPage() {
     <PlatformSettingsSection activePlatform={activePlatform} enabledPlatforms={enabledPlatforms} />
     {isAndroid && <section className="settings-group settings-services-group"><div className="settings-group-heading"><h2>Android 服务</h2><p>应用更新和邮箱同步。</p></div><AppUpdateCard /><AndroidEmailSyncCard /></section>}
     <details className="settings-advanced" open={advancedOpen} onToggle={event => setAdvancedOpen((event.currentTarget as HTMLDetailsElement).open)}>
-      <summary><span><strong>高级与诊断</strong><small>行情同步、数据源、缓存和本地存储</small></span><ChevronRight size={18} /></summary>
+    <summary><span><strong>行情与诊断</strong><small>行情同步、备用数据源和本地存储</small></span><ChevronRight size={18} /></summary>
       <form onSubmit={save} style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', marginTop: 12 }}>
         <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}><h3 style={{ margin: 0 }}>行情同步</h3>
           {[["备份导入后补齐历史行情", autoSyncAfterImport, setAutoSyncAfterImport], ["交易录入后补齐历史行情", autoSyncAfterTransaction, setAutoSyncAfterTransaction], ["更新前一交易日收盘数据", autoSyncDailyClose, setAutoSyncDailyClose]].map(([label, checked, setter]) => <label key={label as string} className="flex-between"><span>{label as string}</span><input type="checkbox" checked={checked as boolean} onChange={e => (setter as (value: boolean) => void)(e.target.checked)} /></label>)}
         </div>
         <div className="glass-card" style={{ display: 'flex', flexDirection: 'column', gap: 12 }}><h3 style={{ margin: 0, display: 'flex', gap: 8, alignItems: 'center' }}><Key size={16} />行情数据源</h3>
-          <p className="text-xs text-muted">股票（A／港／美快照及未复权日 K）默认使用 stock-sdk，无需 API Key。美股历史日线遇到代码不支持、无数据或连续连接失败时，会尝试已配置的 MarketData.app；短暂网络失败会自动重试，不会误报为不支持。</p>
-          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><strong>stock-sdk</strong><span className="badge success" style={{ marginLeft: 8 }}>股票默认源</span><p className="text-xs text-muted">Android 经 NativeMarket 请求；PWA 使用浏览器请求并受 CORS 限制。</p></div>
-          {!isAndroid && <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><div className="flex-between"><strong>MarketData.app</strong><label><input type="checkbox" checked={marketdataEnabled} onChange={e => setMarketdataEnabled(e.target.checked)} /> 美股历史日线与个股期权回退源</label></div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><input type="password" value={marketdataKey} placeholder="MarketData.app Token" onChange={e => setMarketdataKey(e.target.value)} /><button type="button" onClick={testMarketdata}>{connectionState === 'pending' ? '测试中…' : '测试'}</button></div><small className="text-muted">Token 仅保存于本机浏览器。MarketData.app 已提供浏览器 CORS 支持；连接失败会按临时网络错误重试，不会直接判为不支持。</small>{connectionState !== 'idle' && <small className={connectionState === 'success' ? 'text-success' : 'text-muted'}>{connectionState === 'success' ? '连接成功' : '连接失败'}</small>}</div>}
-          {isAndroid && <p className="text-xs text-muted">Android 的美股个股期权使用 Yahoo（含 chart 元数据回退）；MarketData.app 不参与 Android 期权路由。</p>}
+          <p className="text-xs text-muted">应用会优先使用默认行情服务；美股历史数据无法获取时，可尝试备用服务。短暂网络问题会自动重试，不会直接判为不支持。</p>
+          <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><strong>默认行情服务</strong><span className="badge success" style={{ marginLeft: 8 }}>股票默认源</span><p className="text-xs text-muted">无需额外密钥；网页端会根据网络环境返回可用状态。</p></div>
+          {!isAndroid && <div style={{ borderTop: '1px solid var(--border-color)', paddingTop: 12 }}><div className="flex-between"><strong>备用美股行情服务</strong><label><input type="checkbox" checked={marketdataEnabled} onChange={e => setMarketdataEnabled(e.target.checked)} /> 用于美股历史数据和期权</label></div><div style={{ display: 'flex', gap: 8, marginTop: 8 }}><input type="password" value={marketdataKey} placeholder="输入备用服务密钥" onChange={e => setMarketdataKey(e.target.value)} /><button type="button" onClick={testMarketdata}>{connectionState === 'pending' ? '测试中…' : '测试连接'}</button></div><small className="text-muted">密钥仅保存于本机浏览器；连接失败时会按临时问题重试。</small>{connectionState !== 'idle' && <small className={connectionState === 'success' ? 'text-success' : 'text-muted'}>{connectionState === 'success' ? '连接成功' : '连接失败，请检查密钥或稍后重试'}</small>}</div>}
+          {isAndroid && <p className="text-xs text-muted">移动端会使用系统提供的美股行情服务；此处无需配置备用服务。</p>}
         </div>
         <button type="submit" className="primary" style={{ alignSelf: 'flex-start' }}><Check size={16} /> 保存设置</button>
       </form>

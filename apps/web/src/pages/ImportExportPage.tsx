@@ -1,4 +1,5 @@
 import React, { useEffect, useRef, useState } from 'react';
+import { useLiveQuery } from 'dexie-react-hooks';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { db } from '../db/localDb';
 import { backupService, BackupPreview } from '../core/backup/backupService';
@@ -16,13 +17,16 @@ import {
   XCircle,
   Inbox,
 } from 'lucide-react';
-import { TradeTypeLabels } from '../shared/models';
+import { BrokerPlatform, TradeTypeLabels } from '../shared/models';
 import { isAndroidNativeRuntime } from '../platform/nativeRuntime';
 import { useAppShell } from '../app/AppShell';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
+import { userFacingError } from '../shared/userMessages';
 import { parsePdfStatementText, parseSchwabTransactionsCsv, type ParsedTradeCandidate } from '@recoder/core';
 import { extractPdfText } from '../core/imports/pdfTextExtractor';
 import { cacheService } from '../core/market/marketDataCacheService';
+import { marketCacheManager } from '../core/market/marketCacheManager';
+import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import {
   dismissNativeInboxItem,
   finalizeNativeInboxItem,
@@ -50,11 +54,15 @@ export default function ImportExportPage() {
   const [statementFile, setStatementFile] = useState<File | null>(null);
   const [statementPassword, setStatementPassword] = useState('');
   const [statementCandidates, setStatementCandidates] = useState<ParsedTradeCandidate[]>([]);
+  const [selectedStatementIds, setSelectedStatementIds] = useState<Set<string>>(new Set());
   const [statementWarnings, setStatementWarnings] = useState<string[]>([]);
   const [statementBusy, setStatementBusy] = useState(false);
   const [statementMessage, setStatementMessage] = useState('');
   const isAndroid = isAndroidNativeRuntime();
   const { activePlatform } = useAppShell();
+  const activeLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value ?? 1) ?? 1;
+  const activeLedger = useLiveQuery(() => typeof activeLedgerId === 'number' ? db.ledgers.get(activeLedgerId) : undefined, [activeLedgerId]);
+  const activePlatformLabel = activePlatform && activePlatform in BrokerPlatform ? BrokerPlatform[activePlatform].label : activePlatform || '当前平台';
   const isBackupRoute = location.pathname.endsWith('/backup');
   const isEmailRoute = location.pathname.endsWith('/email-imports');
 
@@ -76,7 +84,7 @@ export default function ImportExportPage() {
     try {
       setNativePreviews(await listNativeInboxPreviews());
     } catch (error) {
-      setNativeInboxMessage(`读取 Android 待导入收件箱失败：${error instanceof Error ? error.message : String(error)}`);
+      setNativeInboxMessage(`读取待导入内容失败：${userFacingError(error, 'load')}`);
     } finally {
       setNativeInboxBusy(false);
     }
@@ -102,7 +110,7 @@ export default function ImportExportPage() {
       setNativeInboxMessage(`${results.map((result) => result.message).join('；')}；行情源已统一 ${nameRepair.updatedTransactions} 条证券名称。`);
       await refreshNativeInbox();
     } catch (error) {
-      setNativeInboxMessage(`导入失败：${error instanceof Error ? error.message : String(error)}`);
+      setNativeInboxMessage(`导入失败：${userFacingError(error, 'import')}`);
     } finally {
       setNativeInboxBusy(false);
     }
@@ -115,7 +123,7 @@ export default function ImportExportPage() {
       setNativeInboxMessage('已跳过该待导入内容，未写入账本。');
       await refreshNativeInbox();
     } catch (error) {
-      setNativeInboxMessage(`操作失败：${error instanceof Error ? error.message : String(error)}`);
+      setNativeInboxMessage(`操作失败：${userFacingError(error, 'save')}`);
     } finally {
       setNativeInboxBusy(false);
     }
@@ -129,10 +137,11 @@ export default function ImportExportPage() {
       const text = isSchwabCsv ? await file.text() : await extractPdfText(file, password);
       const parsed = isSchwabCsv ? parseSchwabTransactionsCsv(text) : parsePdfStatementText(text);
       setStatementCandidates(parsed.candidates);
+      setSelectedStatementIds(new Set(parsed.candidates.map((candidate) => candidate.id)));
       setStatementWarnings(parsed.warnings);
     } catch (error) {
       setStatementCandidates([]);
-      setStatementWarnings([error instanceof Error ? error.message : String(error)]);
+      setStatementWarnings([userFacingError(error, 'import')]);
     } finally {
       setStatementBusy(false);
     }
@@ -146,20 +155,32 @@ export default function ImportExportPage() {
   };
 
   const handleImportStatement = async () => {
-    if (statementCandidates.length === 0) return;
+    const selectedCandidates = statementCandidates.filter((candidate) => selectedStatementIds.has(candidate.id));
+    if (selectedCandidates.length === 0) return;
     setStatementBusy(true);
     try {
       const results = [];
-      for (const candidate of statementCandidates) {
-        results.push(await importParsedCandidate(candidate, `Web PDF 结单 ${statementFile?.name ?? ''}`));
+      for (const candidate of selectedCandidates) {
+        results.push(await importParsedCandidate(candidate, `Web 结单 ${statementFile?.name ?? ''}`));
       }
-      const nameRepair = await cacheService.repairSecurityNames(statementCandidates.map(({ symbol, market }) => ({ symbol, market })));
-      setStatementMessage(`${results.map((result) => result.message).join('；')}；行情源已统一 ${nameRepair.updatedTransactions} 条证券名称。`);
+      const nameRepair = await cacheService.repairSecurityNames(selectedCandidates.map(({ symbol, market }) => ({ symbol, market })));
+      const autoSyncSetting = await db.appSettings.get('auto_sync_after_import');
+      let marketMessage = '行情补齐未自动启动，可在行情缓存页手动检测。';
+      if (autoSyncSetting?.value !== false) {
+        const missing = await marketCacheManager.detectAndQueueMissingRanges();
+        if (missing.queued > 0) {
+          await MarketTaskExecutor.startOrWakeMarketExecutor();
+          marketMessage = `已发现 ${missing.queued} 个历史行情区间并开始补齐`;
+        } else {
+          marketMessage = '未发现新的历史行情缺口';
+        }
+      }
+      setStatementMessage(`${results.map((result) => result.message).join('；')}；已统一 ${nameRepair.updatedTransactions} 条证券名称；${marketMessage}。`);
       if (!results.some((result) => result.status === 'FAILED')) {
         setStatementCandidates([]);
       }
     } catch (error) {
-      setStatementMessage(`导入失败：${error instanceof Error ? error.message : String(error)}`);
+      setStatementMessage(`导入失败：${userFacingError(error, 'import')}`);
     } finally {
       setStatementBusy(false);
     }
@@ -180,7 +201,7 @@ export default function ImportExportPage() {
           setImportMessage('');
           setErrorMessage('');
         } catch (err: any) {
-          setErrorMessage(err.message || '解析备份文件失败，请确保是标准的 JSON 格式文件！');
+          setErrorMessage(userFacingError(err, 'backup'));
           setImportStatus('ERROR');
           setSelectedFile(null);
           setPreviewData(null);
@@ -202,7 +223,7 @@ export default function ImportExportPage() {
       downloadAnchor.click();
       downloadAnchor.remove();
     } catch (err: any) {
-      alert(`导出备份失败: ${err.message || err}`);
+      alert(userFacingError(err, 'backup'));
     }
   };
 
@@ -233,7 +254,7 @@ export default function ImportExportPage() {
       setTypedConfirm('');
       setErrorMessage('');
     } catch (err: any) {
-      setErrorMessage(err.message || '导入数据失败，请检查文件内容。');
+      setErrorMessage(userFacingError(err, 'backup'));
       setImportStatus('ERROR');
       setShowOverwriteConfirm(false);
       setTypedConfirm('');
@@ -305,33 +326,43 @@ export default function ImportExportPage() {
       {!isBackupRoute && !isEmailRoute && <div className="glass-card import-export-section" style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
           <FileText size={18} style={{ color: 'var(--accent)' }} />
-          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入嘉信 CSV 或文本 PDF 结单</h3>
+          <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导入 CSV 或文本 PDF 结单</h3>
         </div>
         <p className="text-xs text-muted" style={{ margin: 0 }}>
-          支持嘉信网页导出的 Transactions CSV，以及长桥、汇丰、uSMART 与嘉信的可复制文本 PDF 结单。加密结单会自动使用设置中为当前平台保存的密码；扫描件不支持。
+          支持已适配的 CSV 交易记录与可复制文本 PDF 结单。加密结单会自动使用设置中为当前平台保存的密码；扫描件暂不支持。
         </p>
+        <div className="import-context" aria-label="导入目标与范围">
+          <span>目标账本：{activeLedger?.name ?? '当前账本'}</span>
+          <span>目标平台：{activePlatformLabel}</span>
+          <span>结单密码：{statementPassword ? '已保存' : '未保存或无需密码'}</span>
+          <span>导入范围：仅写入已勾选候选</span>
+        </div>
         <label className="import-export-file-row">
           <span className="import-export-file-icon"><FileText size={18} aria-hidden="true" /></span>
           <span className="import-export-file-copy">
-            <strong>{statementFile ? '已选择导入文件' : '选择 PDF 或嘉信 CSV'}</strong>
-            <small>{statementFile ? statementFile.name : '支持文本型 PDF 与嘉信 Transactions CSV；扫描件暂不支持'}</small>
+            <strong>{statementFile ? '已选择导入文件' : '选择结单文件'}</strong>
+            <small>{statementFile ? statementFile.name : '支持已适配的 CSV 与文本型 PDF；扫描件暂不支持'}</small>
           </span>
-          <input aria-label="选择 PDF 结单" type="file" accept="application/pdf,.pdf,text/csv,.csv" onChange={handleStatementFileChange} disabled={statementBusy} />
+          <input aria-label="选择结单文件" type="file" accept="application/pdf,.pdf,text/csv,.csv" onChange={handleStatementFileChange} disabled={statementBusy} />
         </label>
         {statementBusy && <div className="text-xs text-muted">正在提取并解析结单…</div>}
         {statementWarnings.length > 0 && <div className="text-xs" style={{ color: 'var(--color-warning)' }}>{statementWarnings.join(' ')}</div>}
         {statementMessage && <div className="text-xs" style={{ color: 'var(--text-secondary)' }}>{statementMessage}</div>}
         {statementCandidates.length > 0 && (
           <>
+            <div className="text-xs text-muted">发现 {statementCandidates.length} 笔候选，已选择 {selectedStatementIds.size} 笔{statementWarnings.length > 0 ? `；${statementWarnings.length} 条提示` : ''}。</div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: '0.3rem' }}>
-              {statementCandidates.map((candidate) => (
-                <div key={candidate.id} className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  {candidate.platform} · {TradeTypeLabels[candidate.tradeType as TradeType] ?? candidate.tradeType} {candidate.symbol} {candidate.quantity} 股 @ {candidate.price} · {candidate.tradeDate}
-                </div>
+            {statementCandidates.map((candidate) => (
+                <label key={candidate.id} className="import-candidate-row">
+                  <input type="checkbox" checked={selectedStatementIds.has(candidate.id)} onChange={(event) => setSelectedStatementIds((current) => { const next = new Set(current); if (event.target.checked) next.add(candidate.id); else next.delete(candidate.id); return next; })} />
+                  <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                    {candidate.platform} · {TradeTypeLabels[candidate.tradeType as TradeType] ?? candidate.tradeType} {candidate.symbol} {candidate.quantity} 股 @ {candidate.price} · {candidate.tradeDate}
+                  </span>
+                </label>
               ))}
             </div>
             <button type="button" className="primary" data-testid="confirm-statement-import" disabled={statementBusy} onClick={() => void handleImportStatement()}>
-              确认导入 {statementCandidates.length} 笔
+              确认导入 {selectedStatementIds.size} 笔
             </button>
           </>
         )}
@@ -344,7 +375,7 @@ export default function ImportExportPage() {
           <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 600 }}>导出本地备份</h3>
         </div>
         <p className="text-sm text-muted">
-          将所有交易明细、账本及货币等配置打包导出为一个加密安全的 JSON 文件，以保存在本地或转移到其他设备上。
+          将所有交易明细、账本及货币等配置打包导出为本地 JSON 文件，可用于保存或转移到其他设备。
         </p>
         
         <button className="primary" onClick={handleExport} style={{ marginTop: '0.25rem', width: '100%' }}>

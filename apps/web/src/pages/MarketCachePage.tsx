@@ -16,6 +16,7 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { SecondaryPageHeader } from '../components/SecondaryPageHeader';
+import { userFacingError, userFacingSyncDetail } from '../shared/userMessages';
 
 export default function MarketCachePage() {
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -137,7 +138,7 @@ export default function MarketCachePage() {
       setImportStatus('SUCCESS');
       setSelectedFile(null);
     } catch (err: any) {
-      setErrorMessage(err.message || '导入行情缓存失败');
+      setErrorMessage(userFacingError(err, 'import'));
       setImportStatus('ERROR');
     } finally {
       setIsImporting(false);
@@ -156,7 +157,7 @@ export default function MarketCachePage() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert(`导出失败: ${err.message || err}`);
+      setErrorMessage(userFacingError(err, 'backup'));
     }
   };
 
@@ -172,7 +173,7 @@ export default function MarketCachePage() {
       a.remove();
       URL.revokeObjectURL(url);
     } catch (err: any) {
-      alert(`导出缺失清单失败: ${err.message || err}`);
+      setErrorMessage(userFacingError(err, 'backup'));
     }
   };
 
@@ -183,7 +184,7 @@ export default function MarketCachePage() {
       const summary = await marketCacheManager.detectAndQueueMissingRanges();
       setDetectSummary(summary);
     } catch (err: any) {
-      setErrorMessage(err.message || '检测缺失区间失败');
+      setErrorMessage(userFacingError(err, 'sync'));
       setImportStatus('ERROR');
     } finally {
       setIsDetecting(false);
@@ -195,7 +196,7 @@ export default function MarketCachePage() {
     try {
       await MarketTaskExecutor.startOrWakeMarketExecutor();
     } catch (err: any) {
-      alert(`启动同步失败: ${err.message || err}`);
+      setErrorMessage(`同步未启动：${userFacingError(err, 'sync')}`);
     } finally {
       setIsSyncing(false);
     }
@@ -209,7 +210,7 @@ export default function MarketCachePage() {
 
   return (
     <div className="page page-secondary market-cache-page">
-      <SecondaryPageHeader title="行情缓存管理" fallback="/data" />
+      <SecondaryPageHeader title="历史行情管理" fallback="/data" />
 
       <section className="market-cache-section" aria-labelledby="market-cache-overview-title">
         <div className="market-cache-section-heading">
@@ -277,7 +278,7 @@ export default function MarketCachePage() {
               <div className="market-cache-attention-row" key={item.id}>
                 <div>
                   <strong>{item.securityKey || item.symbol || item.id}</strong>
-                  <span>{item.requiredFromDate && item.requiredToDate ? `${item.requiredFromDate} ~ ${item.requiredToDate} · ` : ''}{item.lastError || '当前数据源不支持该请求'}</span>
+                  <span>{item.requiredFromDate && item.requiredToDate ? `${item.requiredFromDate} ~ ${item.requiredToDate} · ` : ''}{item.lastError ? userFacingSyncDetail(item.lastError) : '当前没有可用的行情服务支持该区间'}</span>
                 </div>
                 <span className="market-cache-status is-unknown">{item.status === 'unsupported' ? '暂不支持' : '已停止'}</span>
               </div>
@@ -336,7 +337,7 @@ export default function MarketCachePage() {
         <div className="market-cache-section-heading">
           <div>
             <h2 id="market-cache-backup-title">缓存备份</h2>
-            <p>使用 market-cache-v1 文件在设备之间备份或迁移行情数据。</p>
+            <p>使用行情数据文件在设备之间备份或迁移历史行情。</p>
           </div>
           <Upload size={20} aria-hidden="true" />
         </div>

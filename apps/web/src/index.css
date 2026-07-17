@@ -724,6 +724,18 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 .action-sheet-backdrop { position: fixed; inset: 0; z-index: 80; display: flex; align-items: flex-end; justify-content: center; padding: max(12px, env(safe-area-inset-top)) 0 0; background: rgba(0,0,0,.38); overscroll-behavior: contain; }
 .action-sheet { width: min(100%, 520px); max-height: calc(100dvh - max(12px, env(safe-area-inset-top))); box-sizing: border-box; display: flex; flex-direction: column; overflow: hidden; padding: 16px 20px calc(16px + env(safe-area-inset-bottom)); background: var(--bg-secondary); border-radius: 24px 24px 0 0; }
 .action-sheet-scroll { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 0 4px; }.action-sheet-group { margin-bottom: 16px; }.action-sheet-group:last-child { margin-bottom: 0; }.action-sheet-group-title { margin: 0 0 6px 4px; }.action-sheet-cancel { flex: 0 0 auto; width: 100%; margin-top: 10px; }
+.action-sheet > h2 { margin: 0 0 14px; font-size: 20px; }.action-sheet > p { margin: 0 0 16px; color: var(--text-muted); line-height: 1.6; }.form-field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; color: var(--text-primary); font-size: 13px; font-weight: 650; }.form-field input, .form-field select { width: 100%; box-sizing: border-box; min-height: 42px; padding: 0 12px; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-primary); color: var(--text-primary); font: inherit; font-weight: 400; }.form-field small { color: var(--text-muted); font-weight: 400; }.action-sheet-actions { display: flex; gap: 10px; margin-top: 8px; }.action-sheet-actions button { flex: 1; min-height: 42px; }
+.import-candidate-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px 8px; border: 1px solid var(--border-color); border-radius: 8px; cursor: pointer; }.import-candidate-row + .import-candidate-row { margin-top: 5px; }.import-candidate-row input { margin-top: 2px; }
+.joint-perspective-card { display: flex; flex-wrap: wrap; align-items: center; gap: .55rem; margin-bottom: .8rem; padding: .75rem .9rem; border: 1px solid var(--border-color); border-radius: .85rem; background: var(--surface-card); }
+.joint-perspective-card > span { color: var(--text-secondary); font-size: .82rem; font-weight: 600; }
+.joint-perspective-card > div { display: flex; flex-wrap: wrap; gap: .4rem; }
+.joint-perspective-card button { border: 1px solid var(--border-color); border-radius: 999px; padding: .32rem .65rem; background: transparent; color: var(--text-primary); font-size: .8rem; }
+.joint-perspective-card button.active { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 13%, transparent); color: var(--accent); }
+.joint-perspective-card small { flex-basis: 100%; color: var(--text-secondary); font-size: .76rem; }
+.empty-state-actions { display: flex; justify-content: center; flex-wrap: wrap; gap: .55rem; margin-top: .8rem; }
+.empty-state-actions button { min-height: 36px; padding: 0 .85rem; border: 1px solid var(--border-color); border-radius: 10px; background: var(--bg-secondary); color: var(--text-primary); }
+.empty-state-actions button.primary { border-color: var(--accent); background: var(--accent); color: #fff; }
+.import-context { display: flex; flex-wrap: wrap; gap: .35rem .8rem; padding: .65rem .75rem; border-radius: .65rem; background: var(--bg-primary); color: var(--text-secondary); font-size: .76rem; }
 .range-selector { display: flex; overflow-x: auto; gap: 8px; padding-bottom: 2px; }.range-selector button { white-space: nowrap; min-height: 34px; border-radius: 18px; padding: .35rem .75rem; font-size: 13px; }.range-selector button.active { background: var(--text-primary); color: var(--bg-secondary); border-color: var(--text-primary); }
 .metric-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }.metric { background: var(--bg-card); border-radius: 14px; padding: 12px; }.metric-label { font-size: 12px; color: var(--text-muted); }.metric-value { margin-top: 4px; font-size: 16px; font-weight: 700; }
 .portfolio-page { gap: 14px; }
@@ -1019,3 +1031,6 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
 .stock-detail-transaction > small { grid-column: 1 / -1; display: flex; align-items: center; gap: 4px; color: var(--text-muted); font-size: 11px; }
 .stock-detail-transaction > small span { margin-left: auto; }
 @media (max-width: 390px) { .stock-detail-range-selector button { padding-inline: 10px; font-size: 12px; }.stock-detail-pnl-card > strong { font-size: 36px; }.stock-detail-transaction > div b { font-size: 12px; } }
+
+.analysis-chart { min-width: 0; width: 100%; min-height: 220px; }
+.analysis-chart-placeholder { display: grid; place-items: center; height: 100%; color: var(--text-muted); font-size: 12px; }

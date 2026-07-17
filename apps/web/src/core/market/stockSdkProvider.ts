@@ -89,11 +89,14 @@ export class StockSdkProvider implements MarketDataProvider {
       const options = { period: 'daily', startDate: startDate.replaceAll('-', ''), endDate: endDate.replaceAll('-', ''), adjust: '' } as any;
       const sdk = this.sdk();
       const sourceSymbol = this.toSdkSymbol(symbol, normalizedMarket);
-      const rows: any[] = normalizedMarket === 'A_SHARE'
-        ? await sdk.kline.cn(sourceSymbol, options)
-        : normalizedMarket === 'HK'
-          ? await sdk.kline.hk(sourceSymbol, options)
-          : await sdk.kline.us(sourceSymbol, options);
+      const rows: any[] = await this.withTimeout(
+        normalizedMarket === 'A_SHARE'
+          ? sdk.kline.cn(sourceSymbol, options)
+          : normalizedMarket === 'HK'
+            ? sdk.kline.hk(sourceSymbol, options)
+            : sdk.kline.us(sourceSymbol, options),
+        8_000,
+      );
       const bars = rows
         .map(row => this.toBar(row, symbol, market, startDate, endDate))
         .filter((bar): bar is HistoricalDailyBar => bar !== null);
@@ -222,10 +225,20 @@ export class StockSdkProvider implements MarketDataProvider {
   private async fromError(error: unknown, startedAt: number): Promise<MarketDataResult<any>> {
     const message = error instanceof Error ? error.message : String(error);
     const cors = /\bcors\b/i.test(message);
+    if (/STOCK_SDK_TIMEOUT/.test(message)) {
+      return this.failed('SDK_REQUEST_ERROR', 'stock-sdk 请求超时，正在尝试下一个行情源。', startedAt);
+    }
     return this.failed(
       cors ? 'CORS_ERROR' : 'NETWORK_UNREACHABLE',
       cors ? '请求受到浏览器跨域限制。' : `stock-sdk 请求未能建立连接，将自动重试：${message}`,
       startedAt,
     ).then(result => ({ ...result, status: cors ? 'cors_error' : 'network_error' }));
+  }
+
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('STOCK_SDK_TIMEOUT')), timeoutMs);
+      promise.then((value) => { clearTimeout(timer); resolve(value); }, (error) => { clearTimeout(timer); reject(error); });
+    });
   }
 }

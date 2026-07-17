@@ -22,7 +22,7 @@ describe('stock-sdk inferred calendar provider', () => {
     await db.appSettings.delete(STOCK_CALENDAR_CACHE_KEY);
   });
 
-  it('uses the union of two anchor securities and detects market holidays', async () => {
+  it('uses the primary anchor and detects market holidays', async () => {
     const closures = new Set(['2026-07-03', '2026-07-01']);
     const client: DailyKlineClient = {
       dates: vi.fn(async (_market, _symbol, start, end) => weekdays(start, end).filter((date) => !closures.has(date))),
@@ -33,7 +33,7 @@ describe('stock-sdk inferred calendar provider', () => {
     expect(cache.provider).toBe('stock-sdk');
     expect(cache.records.find((record) => record.market === 'US' && record.year === 2026)?.closedDates).toContain('2026-07-03');
     expect(cache.records.find((record) => record.market === 'HK' && record.year === 2026)?.closedDates).toContain('2026-07-01');
-    expect(client.dates).toHaveBeenCalledTimes(8);
+    expect(client.dates).toHaveBeenCalledTimes(4);
   });
 
   it('accepts one healthy anchor when the other anchor is unavailable', async () => {
@@ -47,8 +47,9 @@ describe('stock-sdk inferred calendar provider', () => {
 
     const cache = await provider.sync(true);
     expect(cache.records).toHaveLength(4);
-    expect(cache.lastError).toContain('SPY');
-    expect(cache.lastError).toContain('00700');
+    expect(cache.lastError).toBeUndefined();
+    expect(cache.lastWarning).toContain('SPY');
+    expect(cache.lastWarning).toContain('00700');
     expect(await provider.isTradingDay('US', '2026-07-14')).toBe(true);
   });
 

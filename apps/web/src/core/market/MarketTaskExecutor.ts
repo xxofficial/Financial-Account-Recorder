@@ -493,7 +493,9 @@ export class MarketTaskExecutor {
       noData ||
       result.status === 'cors_error' ||
       result.status === 'provider_unconfigured' ||
-      result.httpStatus === 404
+      result.httpStatus === 404 ||
+      result.httpStatus === 401 ||
+      result.httpStatus === 403
     );
   }
 
@@ -536,6 +538,8 @@ export class MarketTaskExecutor {
             ? '浏览器拒绝了 MarketData.app 的跨域请求，当前连接不可用。'
             : noData
               ? 'MarketData.app 未返回该标的的历史数据，当前暂不支持。'
+              : result.httpStatus === 401 || result.httpStatus === 403
+                ? 'MarketData.app 凭据无效或无权访问该数据，当前暂不支持。'
               : 'MarketData.app 当前不可用于此请求，当前暂不支持。';
           await db.marketWorkItems.update(itemId, {
             status: 'unsupported',

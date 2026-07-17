@@ -3,6 +3,7 @@ import { NavLink, useLocation, useNavigate } from 'react-router-dom';
 import { useLiveQuery } from 'dexie-react-hooks';
 import { AlertTriangle, Briefcase, ChevronDown, ChevronRight, ChevronUp, Database, Download, FileText, Plus, RefreshCw, Settings, SlidersHorizontal, Trash2, TrendingUp } from 'lucide-react';
 import { db } from '../db/localDb';
+import type { Ledger } from '../db/schema';
 import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import { marketCacheManager } from '../core/market/marketCacheManager';
 import { cacheService } from '../core/market/marketDataCacheService';
@@ -95,6 +96,12 @@ function MarketSyncCard() {
 function LedgerDrawer({ close }: { close: () => void }) {
   const { activePlatform, selectPlatform, enabledPlatforms, setPlatformVisibility } = useAppShell();
   const [showVisibilitySettings, setShowVisibilitySettings] = useState(false);
+  const [ledgerEditorOpen, setLedgerEditorOpen] = useState(false);
+  const [ledgerName, setLedgerName] = useState('');
+  const [ledgerDescription, setLedgerDescription] = useState('');
+  const [ledgerType, setLedgerType] = useState<Ledger['type']>('PERSONAL');
+  const [ledgerPartners, setLedgerPartners] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<{ id: number; name: string } | null>(null);
   const ledgers = useLiveQuery(() => db.ledgers.toArray()) ?? [];
   const selectedLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value) ?? 1;
   const transactions = useLiveQuery(async () => selectedLedgerId === 0 ? db.transactions.toArray() : db.transactions.where('ledgerId').equals(selectedLedgerId as number).toArray(), [selectedLedgerId]) ?? [];
@@ -103,20 +110,25 @@ function LedgerDrawer({ close }: { close: () => void }) {
   const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
   const selectLedger = async (ledgerId: number) => { await db.appSettings.put({ key: 'default_ledger', value: ledgerId, updatedAt: Date.now() }); close(); };
   const createLedger = async () => {
-    const name = window.prompt('请输入账本名称');
-    if (!name?.trim()) return;
+    if (!ledgerName.trim()) return;
     const now = Date.now();
-    const id = await db.ledgers.add({ name: name.trim(), type: 'PERSONAL', description: '', partners: '', createdAt: now, updatedAt: now });
+    const id = await db.ledgers.add({ name: ledgerName.trim(), type: ledgerType, description: ledgerDescription.trim(), partners: ledgerType === 'JOINT' ? ledgerPartners.split(',').map((item) => item.trim()).filter(Boolean).join(',') : '', createdAt: now, updatedAt: now });
     await db.appSettings.put({ key: 'default_ledger', value: id, updatedAt: now });
+    setLedgerName(''); setLedgerDescription(''); setLedgerType('PERSONAL'); setLedgerPartners(''); setLedgerEditorOpen(false);
   };
   const deleteLedger = async (ledgerId: number, name: string) => {
-    if (!window.confirm(`确认删除账本“${name}”及其中的交易记录吗？`)) return;
+    setDeleteTarget({ id: ledgerId, name });
+  };
+  const confirmDeleteLedger = async () => {
+    if (!deleteTarget) return;
+    const { id: ledgerId } = deleteTarget;
     const fallbackLedgerId = ledgers.find((ledger) => ledger.id !== ledgerId)?.id ?? 1;
     await db.transaction('rw', [db.ledgers, db.transactions], async () => {
       await db.transactions.where('ledgerId').equals(ledgerId).delete();
       await db.ledgers.delete(ledgerId);
     });
     if (selectedLedgerId === ledgerId) await db.appSettings.put({ key: 'default_ledger', value: fallbackLedgerId, updatedAt: Date.now() });
+    setDeleteTarget(null);
   };
   const platforms = enabledPlatforms;
   const formatAssets = (valueCny: number) => `${displayCurrency.symbol}${(valueCny / displayCurrency.cnyRate).toLocaleString('zh-CN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -125,8 +137,8 @@ function LedgerDrawer({ close }: { close: () => void }) {
 
   return <><div className="drawer-backdrop" onClick={close} /><aside className="ledger-drawer android-drawer">
     <section className="android-drawer-section">
-      <div className="android-drawer-title-row"><h2>我的账本</h2><button className="drawer-create-button" onClick={() => void createLedger()}>＋ 新建账本</button></div>
-      <p>在不同账本间切换以进行资产隔离。合资账本支持资金比例和收益分摊计算。</p>
+      <div className="android-drawer-title-row"><h2>我的账本</h2><button className="drawer-create-button" onClick={() => setLedgerEditorOpen(true)}>＋ 新建账本</button></div>
+      <p>在不同账本间切换以隔离数据。合资账本可记录共有人和实际出资人。</p>
       <div className="android-drawer-card">{ledgers.map((ledger) => {
         const selected = ledger.id === selectedLedgerId;
         return <div key={ledger.id} className={`android-ledger-row ${selected ? 'selected' : ''}`} role="button" tabIndex={0} onClick={() => void selectLedger(ledger.id!)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); void selectLedger(ledger.id!); } }}><span className="android-ledger-copy"><span><strong>{ledger.name}</strong><em className={`ledger-type ${ledger.type.toLowerCase()}`}>{typeLabel(ledger.type)}</em></span>{ledger.description && <small>{ledger.description}</small>}</span><span className="android-ledger-actions">{selected && <span>当前</span>}{ledger.id !== 1 && <button aria-label={`删除账本 ${ledger.name}`} className="drawer-delete" onClick={(event) => { event.stopPropagation(); void deleteLedger(ledger.id!, ledger.name); }}><Trash2 size={20} /></button>}</span></div>;
@@ -154,7 +166,19 @@ function LedgerDrawer({ close }: { close: () => void }) {
         })}
       </div>}
     </section>
-  </aside></>;
+  </aside>
+  {ledgerEditorOpen && <div className="action-sheet-backdrop" role="presentation" onClick={() => setLedgerEditorOpen(false)}><div className="action-sheet" role="dialog" aria-modal="true" aria-labelledby="ledger-editor-title" onClick={(event) => event.stopPropagation()}>
+    <h2 id="ledger-editor-title">新建账本</h2>
+    <label className="form-field"><span>账本名称</span><input autoFocus value={ledgerName} onChange={(event) => setLedgerName(event.target.value)} placeholder="例如：家庭投资" /></label>
+    <label className="form-field"><span>账本类型</span><select value={ledgerType} onChange={(event) => setLedgerType(event.target.value as Ledger['type'])}><option value="PERSONAL">个人账本</option><option value="JOINT">合资账本</option></select></label>
+    <label className="form-field"><span>说明（可选）</span><input value={ledgerDescription} onChange={(event) => setLedgerDescription(event.target.value)} placeholder="用于区分不同用途" /></label>
+    {ledgerType === 'JOINT' && <label className="form-field"><span>共有人</span><input value={ledgerPartners} onChange={(event) => setLedgerPartners(event.target.value)} placeholder="用逗号分隔，例如：我,小明" /><small>入金或撤资时可选择实际出资人。</small></label>}
+    <div className="action-sheet-actions"><button type="button" onClick={() => setLedgerEditorOpen(false)}>取消</button><button type="button" className="primary" disabled={!ledgerName.trim() || (ledgerType === 'JOINT' && !ledgerPartners.trim())} onClick={() => void createLedger()}>创建账本</button></div>
+  </div></div>}
+  {deleteTarget && <div className="action-sheet-backdrop" role="presentation" onClick={() => setDeleteTarget(null)}><div className="action-sheet" role="dialog" aria-modal="true" aria-labelledby="delete-ledger-title" onClick={(event) => event.stopPropagation()}>
+    <h2 id="delete-ledger-title">删除账本？</h2><p>将删除“{deleteTarget.name}”及其中的交易记录。此操作不可撤销，请确认已有备份。</p><div className="action-sheet-actions"><button type="button" onClick={() => setDeleteTarget(null)}>取消</button><button type="button" className="danger" onClick={() => void confirmDeleteLedger()}>删除账本</button></div>
+  </div></div>}
+  </>;
 }
 
 export function PlatformMark({ platform, className }: { platform?: PlatformType; className?: string }) {

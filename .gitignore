@@ -25,3 +25,6 @@ tools/market-fetcher/build/
 tools/market-fetcher/build.log
 apps/web/package-lock.json
 apps/web/dev-dist/
+*.log
+# Local dynamic-review screenshots and raw DOM evidence may contain personal financial data.
+docs/reports/dynamic-review-*/

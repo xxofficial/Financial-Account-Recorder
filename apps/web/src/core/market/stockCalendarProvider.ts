@@ -1,6 +1,5 @@
-import { StockSDK } from 'stock-sdk';
 import { db } from '../../db/localDb';
-import { marketFetch } from '../../platform/nativeRuntime';
+import { StockSdkProvider } from './stockSdkProvider';
 
 export type CalendarMarket = 'A_SHARE' | 'HK' | 'US';
 
@@ -17,6 +16,7 @@ export interface StockCalendarCache {
   fetchedAt: number;
   records: StockCalendarRecord[];
   lastError?: string;
+  lastWarning?: string;
   lastAttemptAt?: number;
 }
 
@@ -68,14 +68,15 @@ function rowDate(row: unknown): string | undefined {
 }
 
 function createDefaultKlineClient(): DailyKlineClient {
-  const sdk = new StockSDK({ fetchImpl: (input: any, init?: any) => marketFetch(input, init) as any });
+  // Keep calendar requests on the same path as historical market data.  The
+  // provider normalizes dates to the compact yyyyMMdd format expected by the
+  // stock-sdk endpoints and applies the shared timeout/error handling.
+  const provider = new StockSdkProvider();
   return {
     async dates(market, symbol, startDate, endDate) {
-      const options = { period: 'daily', startDate, endDate, adjust: '' } as any;
-      const rows: unknown[] = market === 'HK'
-        ? await sdk.kline.hk(symbol, options)
-        : await sdk.kline.us(symbol, options);
-      const dates = rows.map(rowDate).filter((value): value is string => Boolean(value));
+      const result = await provider.fetchHistoricalBars(symbol, market, 'STOCK', startDate, endDate, '');
+      if (!result.ok) throw new Error(result.message || result.status);
+      const dates = (result.data ?? []).map(rowDate).filter((value): value is string => Boolean(value));
       return Array.from(new Set(dates.filter((value) => value >= startDate && value <= endDate))).sort();
     },
   };
@@ -96,6 +97,7 @@ function readCache(value: unknown): StockCalendarCache | undefined {
       && Array.isArray((record as StockCalendarRecord).tradingDates),
     )),
     lastError: typeof candidate.lastError === 'string' ? candidate.lastError : undefined,
+    lastWarning: typeof candidate.lastWarning === 'string' ? candidate.lastWarning : undefined,
     lastAttemptAt: Number(candidate.lastAttemptAt) || undefined,
   };
 }
@@ -130,17 +132,18 @@ function rebuildRecord(existing: StockCalendarRecord | undefined, market: typeof
 }
 
 async function fetchMarketDates(client: DailyKlineClient, market: typeof MARKETS[number], startDate: string, endDate: string): Promise<{ dates: string[]; warnings: string[] }> {
-  const results = await Promise.allSettled(ANCHOR_SYMBOLS[market].map((symbol) => client.dates(market, symbol, startDate, endDate)));
-  const dates = new Set<string>();
   const warnings: string[] = [];
-  results.forEach((result, index) => {
-    if (result.status === 'fulfilled') result.value.forEach((date) => dates.add(date));
-    else warnings.push(`${market} ${ANCHOR_SYMBOLS[market][index]}: ${result.reason instanceof Error ? result.reason.message : String(result.reason)}`);
-  });
-  if (!dates.size && dateRange(startDate, endDate).some(isWeekday)) {
-    throw new Error(warnings.join('; ') || `${market} 日K响应为空`);
+  for (const symbol of ANCHOR_SYMBOLS[market]) {
+    try {
+      const dates = await client.dates(market, symbol, startDate, endDate);
+      if (dates.length) return { dates: Array.from(new Set(dates)).sort(), warnings };
+      warnings.push(`${market} ${symbol}: 日K响应为空`);
+    } catch (error) {
+      warnings.push(`${market} ${symbol}: ${error instanceof Error ? error.message : String(error)}`);
+    }
   }
-  return { dates: Array.from(dates).sort(), warnings: dates.size ? warnings : [] };
+  if (dateRange(startDate, endDate).some(isWeekday)) throw new Error(warnings.join('; ') || `${market} 日K响应为空`);
+  return { dates: [], warnings };
 }
 
 export class StockCalendarProvider {
@@ -165,7 +168,7 @@ export class StockCalendarProvider {
       const record = existingRecords.get(`${market}:${year}`);
       return force || !record?.coveredThrough || record.coveredThrough < targetEnd;
     });
-    if (!needs.length && !existing.lastError) return existing;
+    if (!needs.length) return existing;
     if (!force && existing.lastAttemptAt && now - existing.lastAttemptAt < RETRY_INTERVAL_MS) return existing;
 
     const failures: string[] = [];
@@ -187,7 +190,8 @@ export class StockCalendarProvider {
       fetchedAt: failures.length ? existing.fetchedAt : now,
       records: Array.from(existingRecords.values()).sort((a, b) => a.market.localeCompare(b.market) || a.year - b.year),
       lastAttemptAt: now,
-      lastError: [...failures, ...warnings].join('; ') || undefined,
+      lastError: failures.join('; ') || undefined,
+      lastWarning: warnings.join('; ') || undefined,
     };
     await saveCache(next);
     return next;
@@ -198,12 +202,18 @@ export class StockCalendarProvider {
     const now = this.clock();
     const year = new Date(now).getUTCFullYear();
     const current = await this.ensureYear(year, force);
-    return year > 1 ? this.ensureYear(year - 1, force).catch(() => current) : current;
+    // A manual refresh revalidates the current year.  Older years are only
+    // bootstrapped when missing, avoiding a second full historical refresh.
+    if (year <= 1) return current;
+    const existing = await getCache();
+    const previousYear = year - 1;
+    const hasPreviousYear = existing.records.some((record) => record.year === previousYear);
+    return this.ensureYear(previousYear, !hasPreviousYear).catch(() => current);
   }
 
-  async status(): Promise<{ configured: boolean; fetchedAt?: number; lastError?: string; recordCount: number }> {
+  async status(): Promise<{ configured: boolean; fetchedAt?: number; lastError?: string; lastWarning?: string; recordCount: number }> {
     const cache = await getCache();
-    return { configured: true, fetchedAt: cache.fetchedAt || undefined, lastError: cache.lastError, recordCount: cache.records.length };
+    return { configured: true, fetchedAt: cache.fetchedAt || undefined, lastError: cache.lastError, lastWarning: cache.lastWarning, recordCount: cache.records.length };
   }
 
   async isTradingDay(market: CalendarMarket, date: string): Promise<boolean | undefined> {
@@ -238,6 +248,6 @@ export async function syncStockCalendar(force = false): Promise<StockCalendarCac
   }
 }
 
-export async function getStockCalendarStatus(): Promise<{ configured: boolean; fetchedAt?: number; lastError?: string; recordCount: number }> {
+export async function getStockCalendarStatus(): Promise<{ configured: boolean; fetchedAt?: number; lastError?: string; lastWarning?: string; recordCount: number }> {
   return stockCalendarProvider.status();
 }

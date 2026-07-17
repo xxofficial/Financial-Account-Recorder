@@ -12,6 +12,7 @@ import { MarketTaskExecutor } from '../core/market/MarketTaskExecutor';
 import { createTransferPair, deleteTransferPairByTransactionId, getTransferPairByTransactionId, TransferValidationError, updateTransferPair } from '../core/transfers/transferService';
 import { estimateTradeFees } from '../core/fees/tradeFeeEstimator';
 import { PlatformMark, useAppShell } from '../app/AppShell';
+import { userFacingError } from '../shared/userMessages';
 
 const txnRepo = new TransactionRepository();
 const settingRepo = new AppSettingRepository();
@@ -375,7 +376,7 @@ export default function TransactionFormPage() {
       else await txnRepo.delete(Number(id));
       navigate('/transactions');
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : '删除失败，请重试。');
+      window.alert(userFacingError(error, 'delete'));
     }
   };
 
@@ -485,7 +486,7 @@ export default function TransactionFormPage() {
       navigate('/transactions');
     } catch (error) {
       console.error('保存交易失败', error);
-      window.alert(error instanceof TransferValidationError ? error.message : '保存失败，请检查输入或重试');
+      window.alert(error instanceof TransferValidationError ? error.message : userFacingError(error, 'save'));
     } finally {
       setSaving(false);
     }

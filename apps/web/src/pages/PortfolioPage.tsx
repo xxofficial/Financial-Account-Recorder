@@ -8,6 +8,7 @@ import { securityDetailPath } from '../core/portfolio/securityDetailRoute';
 import { CurrencyType, DisplayCurrency } from '../shared/models';
 import { useAppShell } from '../app/AppShell';
 import { AdaptiveSingleLineText } from '../components/AdaptiveSingleLineText';
+import { computeJointContributions, scalePortfolioSnapshot } from '../core/portfolio/jointLedger';
 
 const calculator = new PortfolioCalculator();
 const rates: ExchangeRates = { usdToCny: 7.2, hkdToCny: .92 };
@@ -18,7 +19,9 @@ export default function PortfolioPage() {
   const navigate = useNavigate();
   const { registerPortfolioRefresh, activePlatform } = useAppShell();
   const [currencyOpen, setCurrencyOpen] = useState(false);
+  const [selectedPartner, setSelectedPartner] = useState<string | null>(null);
   const selectedLedgerId = useLiveQuery(async () => (await db.appSettings.get('default_ledger'))?.value) ?? 1;
+  const ledger = useLiveQuery(() => typeof selectedLedgerId === 'number' ? db.ledgers.get(selectedLedgerId) : undefined, [selectedLedgerId]);
   const transactions = useLiveQuery(async () => {
     const ledgerTransactions = selectedLedgerId === 0
       ? await db.transactions.toArray()
@@ -29,7 +32,14 @@ export default function PortfolioPage() {
   const storedCurrency = useLiveQuery(async () => (await db.appSettings.get('display_currency'))?.value) ?? 'CNY';
   const displayCurrency = DisplayCurrency[storedCurrency as CurrencyType] ?? DisplayCurrency.CNY;
   const snapshot = useMemo(() => calculator.calculate(transactions, quotes, rates), [transactions, quotes]);
-  const holdings = useMemo(() => Object.values(snapshot.positions).filter((item) => Math.abs(item.quantity) > 1e-5), [snapshot]);
+  const contributions = useMemo(() => computeJointContributions(ledger, transactions, quotes, rates), [ledger, transactions, quotes]);
+  const activeContribution = contributions.find((item) => item.name === selectedPartner);
+  const viewRatio = activeContribution?.ratio ?? 1;
+  const viewSnapshot = useMemo(() => scalePortfolioSnapshot(snapshot, viewRatio), [snapshot, viewRatio]);
+  const holdings = useMemo(() => Object.values(viewSnapshot.positions).filter((item) => Math.abs(item.quantity) > 1e-5), [viewSnapshot]);
+  useEffect(() => {
+    if (selectedPartner && !activeContribution) setSelectedPartner(null);
+  }, [activeContribution, selectedPartner]);
   const refresh = useCallback(async () => {
     if (!holdings.length) return;
     const { cacheService } = await import('../core/market/marketDataCacheService');
@@ -51,6 +61,7 @@ export default function PortfolioPage() {
   };
 
   return <div className="page tab-page portfolio-page">
+    {contributions.length > 0 && <section className="joint-perspective-card" aria-label="合资账本视角"><span>查看视角</span><div><button type="button" className={!selectedPartner ? 'active' : ''} onClick={() => setSelectedPartner(null)}>整体</button>{contributions.map((item) => <button type="button" className={selectedPartner === item.name ? 'active' : ''} key={item.name} onClick={() => setSelectedPartner(item.name)}>{item.name} {Math.round(item.ratio * 1000) / 10}%</button>)}</div>{activeContribution && <small>{activeContribution.name}：净入金 {cnyMoney(activeContribution.netContributionCny)}，权益 {cnyMoney(activeContribution.assetsShareCny)}，累计盈亏 {signedCnyMoney(activeContribution.pnlShareCny)}</small>}</section>}
     <section className="portfolio-summary">
       <div className="portfolio-currency-selector">
         <button className="portfolio-currency-button" onClick={() => setCurrencyOpen((open) => !open)} aria-expanded={currencyOpen}>
@@ -60,33 +71,33 @@ export default function PortfolioPage() {
           {Object.values(DisplayCurrency).map((currency) => <button key={currency.code} role="menuitem" className={currency.code === displayCurrency.code ? 'active' : ''} onClick={() => void setDisplayCurrency(currency.code)}>{currency.label}（{currency.code}）</button>)}
         </div>}
       </div>
-      <div className="portfolio-total-assets">{cnyMoney(snapshot.totalAssetsCny)}</div>
-      <div className={pnlClass(snapshot.dayProfitCny)}>今日盈亏 {signedCnyMoney(snapshot.dayProfitCny)}（{snapshot.dayProfitCny >= 0 ? '+' : ''}{snapshot.dayProfitPercent.toFixed(2)}%）</div>
+      <div className="portfolio-total-assets">{cnyMoney(viewSnapshot.totalAssetsCny)}</div>
+      <div className={pnlClass(viewSnapshot.dayProfitCny)}>今日盈亏 {signedCnyMoney(viewSnapshot.dayProfitCny)}（{viewSnapshot.dayProfitCny >= 0 ? '+' : ''}{viewSnapshot.dayProfitPercent.toFixed(2)}%）</div>
     </section>
 
     <section className="portfolio-metrics-card">
       <div className="portfolio-metrics-row">
-        <Metric label="净入金" value={cnyMoney(snapshot.netInflowCny)} details={[`累计入金 ${cnyMoney(snapshot.totalDepositCny)}`, `累计出金 ${cnyMoney(snapshot.totalWithdrawCny)}`]} />
-        <Metric label="可用现金" value={cnyMoney(snapshot.cashBalanceCny)} details={['按当前汇率估算']} />
+        <Metric label="净入金" value={cnyMoney(viewSnapshot.netInflowCny)} details={[`累计入金 ${cnyMoney(viewSnapshot.totalDepositCny)}`, `累计出金 ${cnyMoney(viewSnapshot.totalWithdrawCny)}`]} />
+        <Metric label="可用现金" value={cnyMoney(viewSnapshot.cashBalanceCny)} details={['按当前汇率估算']} />
       </div>
       <div className="portfolio-metrics-row">
-        <Metric label="持仓浮盈" value={signedCnyMoney(snapshot.unrealizedProfitCny)} className={pnlClass(snapshot.unrealizedProfitCny)} details={[`${snapshot.unrealizedProfitPercent >= 0 ? '+' : ''}${snapshot.unrealizedProfitPercent.toFixed(2)}%`]} />
-        <Metric label="持仓总市值" value={cnyMoney(snapshot.holdingsValueCny)} details={['按现价估算']} />
+        <Metric label="持仓浮盈" value={signedCnyMoney(viewSnapshot.unrealizedProfitCny)} className={pnlClass(viewSnapshot.unrealizedProfitCny)} details={[`${viewSnapshot.unrealizedProfitPercent >= 0 ? '+' : ''}${viewSnapshot.unrealizedProfitPercent.toFixed(2)}%`]} />
+        <Metric label="持仓总市值" value={cnyMoney(viewSnapshot.holdingsValueCny)} details={['按现价估算']} />
       </div>
     </section>
 
     <section className="portfolio-metrics-card portfolio-trade-stats">
       <h2>交易统计</h2>
       <div className="portfolio-metrics-row">
-        <Metric label="总手续费" value={cnyMoney(snapshot.totalCommissionCny + snapshot.totalTaxCny)} details={[`佣金 ${cnyMoney(snapshot.totalCommissionCny)}`, `税费 ${cnyMoney(snapshot.totalTaxCny)}`]} />
-        <Metric label="交易次数" value={`${snapshot.securityTradeCount} 次`} details={[`买入 ${snapshot.buyTradeCount}`, `卖出 ${snapshot.sellTradeCount}`]} />
+        <Metric label="总手续费" value={cnyMoney(viewSnapshot.totalCommissionCny + viewSnapshot.totalTaxCny)} details={[`佣金 ${cnyMoney(viewSnapshot.totalCommissionCny)}`, `税费 ${cnyMoney(viewSnapshot.totalTaxCny)}`]} />
+        <Metric label="交易次数" value={`${viewSnapshot.securityTradeCount} 次`} details={[`买入 ${viewSnapshot.buyTradeCount}`, `卖出 ${viewSnapshot.sellTradeCount}`]} />
       </div>
     </section>
 
     <section className="portfolio-holdings-section">
       <h2>持仓列表</h2>
       <div className="portfolio-holdings-card">
-        {holdings.length === 0 ? <div className="portfolio-empty">当前范围内还没有持仓。</div> : holdings.map((item) => {
+        {holdings.length === 0 ? <div className="portfolio-empty">当前范围内还没有持仓。<div className="empty-state-actions"><button type="button" onClick={() => navigate('/data/imports')}>导入结单</button><button type="button" className="primary" onClick={() => navigate('/transaction/new')}>手动记账</button></div></div> : holdings.map((item) => {
           const quote = quotes.find((q) => q.symbol === item.symbol && q.market === item.market);
           const hasQuote = quote?.currentPrice !== null && quote?.currentPrice !== undefined;
           const price = quote?.currentPrice ?? item.averageCost;

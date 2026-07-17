@@ -15,6 +15,8 @@ import { Market, BrokerPlatform, TradeTypeLabels, type MarketType, type Platform
 import { PlatformMark, useAppShell } from '../app/AppShell';
 import { AdaptiveSingleLineText } from '../components/AdaptiveSingleLineText';
 import { getTransferPairByTransactionId } from '../core/transfers/transferService';
+import { userFacingError } from '../shared/userMessages';
+import { backupService } from '../core/backup/backupService';
 import type { Transaction, Ledger } from '../db/schema';
 import type { ReactNode } from 'react';
 
@@ -46,7 +48,7 @@ export function cashFlow(tx: Transaction): number {
     case 'WITHDRAW':
     case 'TRANSFER_OUT':
     case 'INTEREST':
-    case 'TAX': return -gross;
+    case 'TAX': return -Math.abs(gross);
     case 'DIVIDEND': return gross - tx.tax;
     case 'OTHER': return gross;
     default: return 0;
@@ -219,6 +221,8 @@ export default function TransactionsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [showMoveLedger, setShowMoveLedger] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [backupExporting, setBackupExporting] = useState(false);
+  const [backupReady, setBackupReady] = useState(false);
   const [pendingStart, setPendingStart] = useState('');
   const [pendingEnd, setPendingEnd] = useState('');
   const [pendingDateSide, setPendingDateSide] = useState<'start' | 'end'>('start');
@@ -288,7 +292,24 @@ export default function TransactionsPage() {
       await db.transaction('rw', [db.transactions], async () => { await db.transactions.bulkDelete(ids); });
       setShowDeleteConfirm(false); exitBatchMode();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : '删除失败，请重试。');
+      window.alert(userFacingError(error, 'delete'));
+    }
+  };
+  const exportBeforeDelete = async () => {
+    setBackupExporting(true);
+    try {
+      const backup = await backupService.exportBackup();
+      const anchor = document.createElement('a');
+      anchor.href = `data:text/json;charset=utf-8,${encodeURIComponent(JSON.stringify(backup, null, 2))}`;
+      anchor.download = `stockledger_backup_before_delete_${new Date().toISOString().slice(0, 10)}.json`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      setBackupReady(true);
+    } catch (error) {
+      window.alert(userFacingError(error, 'backup'));
+    } finally {
+      setBackupExporting(false);
     }
   };
   const moveSelected = useCallback(async (targetLedgerId: number) => {
@@ -304,7 +325,7 @@ export default function TransactionsPage() {
       });
       setShowMoveLedger(false); exitBatchMode();
     } catch (error) {
-      window.alert(error instanceof Error ? error.message : '迁移失败，请重试。');
+      window.alert(userFacingError(error, 'save'));
     }
   }, [selectedIds]);
 
@@ -326,7 +347,7 @@ export default function TransactionsPage() {
     </div>
 
     <div className="transactions-list">
-      {liveTransactions === undefined ? <div className="transactions-empty">加载中...</div> : sections.length === 0 ? <div className="transactions-empty">当前条件下没有流水记录。</div> : sections.map(([date, items]) => <section className="transaction-date-section" key={date}>
+      {liveTransactions === undefined ? <div className="transactions-empty">加载中...</div> : sections.length === 0 ? <div className="transactions-empty">当前条件下没有流水记录。<div className="empty-state-actions"><button type="button" onClick={() => navigate('/data/imports')}>导入结单</button><button type="button" className="primary" onClick={() => navigate('/transaction/new')}>手动记账</button></div></div> : sections.map(([date, items]) => <section className="transaction-date-section" key={date}>
         <h2>{formatDateTitle(date)}</h2>
         <div className="transaction-group-card">{items.map((tx) => {
           const id = tx.id ?? 0;
@@ -337,7 +358,7 @@ export default function TransactionsPage() {
           const platform = (tx.platform in BrokerPlatform ? tx.platform : 'UNSPECIFIED') as PlatformType;
           return <LongPressButton className={`transaction-row-card ${selectedIds.has(id) ? 'selected' : ''}`} key={id} onClick={() => showBatchMode ? toggleSelection(id) : navigate(`/transactions/${id}`)} onLongPress={() => { if (!showBatchMode) setShowBatchMode(true); toggleSelection(id); }}>
             <span className="transaction-row-top"><PlatformMark platform={platform} className="transaction-platform-mark" /><span className={`transaction-type-badge ${positive ? 'positive' : negative ? 'negative' : 'neutral'}`}>{tx.assetType === 'OPTION' && (type === 'BUY' || type === 'SELL') ? `期权${TradeTypeLabels[type]}` : isIpo(tx) ? '新股' : TradeTypeLabels[type]}</span><span className="transaction-row-market">{Market[(tx.market in Market ? tx.market : 'CASH') as MarketType].label}</span><strong className={positive ? 'positive' : negative ? 'negative' : ''}>{type === 'FX_CONVERSION' ? '换汇' : type === 'SPLIT' ? '--' : formatAmount(amount, tx.market)}</strong></span>
-            <span className="transaction-row-meta"><span className="transaction-row-identity">{(type === 'BUY' || type === 'SELL' || type === 'DIVIDEND') && tx.symbol && <span className="transaction-row-symbol">{tx.symbol}</span>}<AdaptiveSingleLineText text={titleFor(tx)} className="transaction-row-title" maxFontSize={15} /></span><span className="transaction-row-time">{tx.tradeTime?.slice(0, 5)}</span></span>
+            <span className="transaction-row-meta"><span className="transaction-row-identity">{tx.symbol && tx.symbol !== 'CASH' && <span className="transaction-row-symbol">{tx.symbol}</span>}<AdaptiveSingleLineText text={titleFor(tx)} className="transaction-row-title" maxFontSize={15} /></span><span className="transaction-row-time">{tx.tradeTime?.slice(0, 5)}</span></span>
             {detailsFor(tx).length > 0 && <span className="transaction-row-details">{detailsFor(tx).join(' · ')}</span>}
             {showBatchMode && <span className={`transaction-checkbox ${selectedIds.has(id) ? 'checked' : ''}`}>{selectedIds.has(id) && <Check size={13} />}</span>}
           </LongPressButton>;
@@ -350,7 +371,7 @@ export default function TransactionsPage() {
     {showDateSheet && <div className="transactions-modal-backdrop" onClick={() => setShowDateSheet(false)}><div className="transactions-sheet" onClick={(event) => event.stopPropagation()}><div className="transactions-sheet-header"><h2>时间筛选</h2><button type="button" onClick={() => setShowDateSheet(false)}><X size={19} /></button></div><div className="transactions-sheet-scroll"><WheelDateRangePicker startDate={pendingStart} endDate={pendingEnd} activeSide={pendingDateSide} onSideChange={setPendingDateSide} onChange={(side, value) => { if (side === 'start') setPendingStart(value); else setPendingEnd(value); }} /></div><div className="transactions-sheet-actions"><button type="button" onClick={() => { setPendingStart(''); setPendingEnd(''); setStartDate(''); setEndDate(''); setShowDateSheet(false); }}>清空时间</button><button type="button" className="primary" onClick={applyDateRange}>确定</button></div></div></div>}
     {showFilterSheet && <div className="transactions-modal-backdrop" onClick={() => setShowFilterSheet(false)}><div className="transactions-sheet" onClick={(event) => event.stopPropagation()}><div className="transactions-sheet-header"><h2>类型筛选</h2><button type="button" onClick={() => setShowFilterSheet(false)}><X size={19} /></button></div><div className="transactions-sheet-scroll"><FilterGroup label="资金流向" options={[['ALL', '全部'], ['INFLOW', '流入'], ['OUTFLOW', '流出']]} value={pendingCash} onChange={(value) => setPendingCash(value as CashFlowFilter)} /><FilterGroup label="币种" options={currencyOptions} value={pendingCurrency} onChange={(value) => setPendingCurrency(value as CurrencyFilter)} /><FilterGroup label="业务场景" options={sceneOptions} value={pendingScene} onChange={(value) => setPendingScene(value as SceneFilter)} /></div><div className="transactions-sheet-actions"><button type="button" onClick={() => { setPendingCash('ALL'); setPendingCurrency('ALL'); setPendingScene('ALL'); setCashFilter('ALL'); setCurrencyFilter('ALL'); setSceneFilter('ALL'); setShowFilterSheet(false); }}>清空筛选</button><button type="button" className="primary" onClick={applyCategoryFilters}>确定</button></div></div></div>}
     {showMoveLedger && <div className="transactions-modal-backdrop" onClick={() => setShowMoveLedger(false)}><div className="transactions-sheet" onClick={(event) => event.stopPropagation()}><div className="transactions-sheet-header"><h2>迁移交易至账本</h2><button type="button" onClick={() => setShowMoveLedger(false)}><X size={19} /></button></div><p className="transactions-sheet-description">请选择要将选中的 {selectedIds.size} 笔交易记录迁移到哪个账本：</p><div className="transactions-ledger-options">{ledgers.map((ledger: Ledger) => <button type="button" key={ledger.id} disabled={ledger.id === activeLedgerId} className={ledger.id === activeLedgerId ? 'current' : ''} onClick={() => { const targetId = ledger.id; if (targetId != null) void moveSelected(targetId); }}><span><strong>{ledger.name}</strong><small>{ledger.type === 'JOINT' ? '合资' : '个人'}</small></span>{ledger.id === activeLedgerId && <small>当前账本</small>}</button>)}</div></div></div>}
-    {showDeleteConfirm && <div className="transactions-modal-backdrop" onClick={() => setShowDeleteConfirm(false)}><div className="transactions-confirm" onClick={(event) => event.stopPropagation()}><h2>批量删除</h2><p>确认删除选中的 {selectedIds.size} 笔记录？删除后无法恢复。</p><div className="transactions-sheet-actions"><button type="button" onClick={() => setShowDeleteConfirm(false)}>取消</button><button type="button" className="danger" onClick={() => void deleteSelected()}>删除</button></div></div></div>}
+    {showDeleteConfirm && <div className="transactions-modal-backdrop" onClick={() => { setShowDeleteConfirm(false); setBackupReady(false); }}><div className="transactions-confirm" onClick={(event) => event.stopPropagation()}><h2>批量删除</h2><p>确认删除选中的 {selectedIds.size} 笔记录？删除后无法恢复。建议先导出一份备份。</p><div className="transactions-sheet-actions"><button type="button" onClick={() => void exportBeforeDelete()} disabled={backupExporting}>{backupExporting ? '导出中…' : backupReady ? '已导出备份' : '先导出备份'}</button><button type="button" onClick={() => { setShowDeleteConfirm(false); setBackupReady(false); }}>取消</button><button type="button" className="danger" onClick={() => void deleteSelected()}>删除</button></div></div></div>}
   </div>;
 }
 
